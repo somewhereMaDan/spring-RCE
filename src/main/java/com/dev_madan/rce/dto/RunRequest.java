@@ -7,5 +7,6 @@ public class RunRequest {
     private String sessionId;
     private String lang;  // "python" | "java" | "cpp"
     private String code;
+    private String inputString;
 
 }

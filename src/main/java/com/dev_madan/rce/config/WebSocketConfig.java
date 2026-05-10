@@ -31,9 +31,6 @@ public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
 
     @Override
     public void configureMessageBroker(MessageBrokerRegistry registry){
-
-
-
         // This sets up an in-memory message broker for the server→client direction. In Node we did:
         // ws.send(JSON.stringify({ type: 'stdout', data: chunk }))
         // We held a reference to ws and pushed directly. In Spring with STOMP, you instead publish to a topic and any client subscribed to it gets the message:

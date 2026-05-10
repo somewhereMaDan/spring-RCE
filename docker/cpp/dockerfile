@@ -1,0 +1,6 @@
+FROM gcc:11
+
+WORKDIR /code
+
+RUN useradd runner
+USER runner
