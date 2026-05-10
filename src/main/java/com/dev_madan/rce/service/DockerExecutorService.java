@@ -4,10 +4,12 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.messaging.simp.SimpMessagingTemplate;
 import org.springframework.stereotype.Service;
 
+import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -19,156 +21,192 @@ import java.util.concurrent.atomic.AtomicLong;
 
 @Service
 public class DockerExecutorService {
-    @Value("${app.host-temp-path:}")
-    private String hostTempPath;
+  @Value("${app.host-temp-path:}")
+  private String hostTempPath;
 
-    private final SimpMessagingTemplate messagingTemplate;
+  private final SimpMessagingTemplate messagingTemplate;
 
-    public DockerExecutorService(SimpMessagingTemplate messagingTemplate) {
-        this.messagingTemplate = messagingTemplate;
+  public DockerExecutorService(SimpMessagingTemplate messagingTemplate) {
+    this.messagingTemplate = messagingTemplate;
+  }
+
+  private Process executePython(String code, String inputString, String sessionId) {
+    String jobId = UUID.randomUUID().toString();
+    String filename = jobId + ".py";
+    Path containerTempDir = Path.of(hostTempPath.isBlank() ? "/app/temp" : hostTempPath);
+    Path filepath = containerTempDir.resolve(filename);
+    String hostTempDir = hostTempPath.isBlank() ? containerTempDir.toString().replace("\\", "/") : hostTempPath.replace("\\", "/");
+
+    try {
+      Files.createDirectories(containerTempDir);
+      Files.writeString(filepath, code);
+    } catch (IOException e) {
+      sendError(sessionId, "Failed to write code on file: " + e.getMessage());
+      return null;
     }
 
-    private Process executePython(String code, String inputString, String sessionId) {
-        String jobId = UUID.randomUUID().toString();
-        String filename = jobId + ".py";
-        Path containerTempDir = Path.of(hostTempPath.isBlank() ? "/app/temp" : hostTempPath);
-        Path filepath = containerTempDir.resolve(filename);
-        String hostTempDir = hostTempPath.isBlank() ? containerTempDir.toString().replace("\\", "/") : hostTempPath.replace("\\", "/");
+    List<String> cmd = List.of("docker", "run", "--rm",
+        "-i", "--memory=256m", "--cpus=0.5", "--network", "none",
+        "-v", String.format("%s:/code", hostTempDir),
+        "python-runner", "python", "-u", String.format("/code/%s", filename));
 
-        try {
-            Files.createDirectories(containerTempDir);
-            Files.writeString(filepath, code);
-        } catch (IOException e) {
-            sendError(sessionId, "Failed to write code on file: " + e.getMessage());
-            return null;
-        }
+    return startProcess(cmd, inputString, sessionId, () -> {
+      try {
+        Files.deleteIfExists(filepath);
+      } catch (IOException ignored) {
+      }
+    });
+  }
 
-        List<String> cmd = List.of(
-                "docker", "run", "--rm", "-i", "--memory=256m",
-                "--cpus=0.5", "--network", "none",
-                "-v", String.format("%s:/code", hostTempDir),
-                "python-runner", "python", "-u", String.format("/code/%s", filename)
-        );
+  private Process executeJava(String code, String inputString, String sessionId) {
+    String jobId = UUID.randomUUID().toString();
+    String filename = "Main.java";
+    Path containerTempDir = Path.of(hostTempPath.isBlank() ? "/app/temp" : hostTempPath, jobId);
+    Path filePath = containerTempDir.resolve(filename);
 
-        return startProcess(cmd, inputString, sessionId, () -> {
-            try {
-                Files.deleteIfExists(filepath);
-            } catch (IOException ignored) {
-            }
-        });
+    System.out.println("containerTempDir: " + containerTempDir);
+    System.out.println("filePath: " + filePath);
+
+    try {
+      Files.createDirectories(containerTempDir);
+      Files.writeString(filePath, code);
+    } catch (IOException e) {
+      sendError(sessionId, "Failed to write code on file: " + e.getMessage());
+      return null;
     }
 
-    public Process execute(String lang, String code, String inputString, String sessionId) {
-        return switch (lang) {
-            case "python" -> executePython(code, inputString, sessionId);
-//            case "java" -> executeJava(code, sessionId);
+    List<String> cmd = List.of("docker", "run", "--rm",
+        "-i", "--memory=256m", "--cpus=0.5", "--network", "none",
+        "-v", String.format("%s:/code", containerTempDir.toString()), "java-runner", "sh", "-c",
+        String.format("javac /code/%s && java -cp /code Main", filename));
+
+    return startProcess(cmd, inputString, sessionId, () -> {
+      deleteDir(containerTempDir.toString());
+    });
+  }
+
+
+  public Process execute(String lang, String code, String inputString, String sessionId) {
+    return switch (lang) {
+      case "python" -> executePython(code, inputString, sessionId);
+      case "java" -> executeJava(code, inputString, sessionId);
 //            case "cpp" -> executeCpp(code, sessionId);
-            default -> {
-                sendError(sessionId, "Unsupported language: " + lang);
-                yield null;
-            }
-        };
+      default -> {
+        sendError(sessionId, "Unsupported language: " + lang);
+        yield null;
+      }
+    };
+  }
+
+  private Process startProcess(List<String> cmd, String inputString, String sessionId, Runnable cleanup) {
+    Process child;
+    try {
+      child = new ProcessBuilder(cmd).redirectErrorStream(false).start();
+
+      if (inputString != null && !inputString.isBlank()) {
+        String normalized = inputString.endsWith("\n") ? inputString : inputString + "\n";
+        child.getOutputStream().write(normalized.getBytes());
+        child.getOutputStream().flush();
+        child.getOutputStream().close();
+      }
+    } catch (IOException e) {
+      sendError(sessionId, "Failed to start Docker: " + e.getMessage());
+      cleanup.run();
+      return null;
     }
 
-    private Process startProcess(List<String> cmd, String inputString, String sessionId, Runnable cleanup) {
-        Process child;
-        try {
-            child = new ProcessBuilder(cmd)
-                    .redirectErrorStream(false)
-                    .start();
+    ScheduledExecutorService scheduler = Executors.newScheduledThreadPool(1);
 
-            if(inputString != null && !inputString.isBlank()){
-                String normalized = inputString.endsWith("\n") ? inputString : inputString + "\n";
-                child.getOutputStream().write(normalized.getBytes());
-                child.getOutputStream().flush();
-                child.getOutputStream().close();
-            }
-        } catch (IOException e) {
-            sendError(sessionId, "Failed to start Docker: " + e.getMessage());
-            cleanup.run();
-            return null;
+    AtomicLong cpuTime = new AtomicLong(0);
+    AtomicLong cpuStart = new AtomicLong(System.currentTimeMillis());
+
+    ScheduledFuture<?> checkCpuTime = scheduler.scheduleAtFixedRate(() -> {
+      System.out.println("cpuTime: " + cpuTime);
+      cpuTime.addAndGet(System.currentTimeMillis() - cpuStart.get());
+      cpuStart.set(System.currentTimeMillis());
+      if (cpuTime.get() >= 10000) {
+        child.destroyForcibly();
+        sendError(sessionId, "CPU Time Limit Exceeded");
+      }
+    }, 500, 500, TimeUnit.MILLISECONDS);
+
+
+    Thread stdoutThread = new Thread(() -> {
+      try (InputStream stdout = child.getInputStream()) {
+        byte[] buf = new byte[1024];
+        int n;
+
+        while ((n = stdout.read(buf)) != -1) {
+          String chunk = new String(buf, 0, n);
+          send(sessionId, "stdout", chunk);
         }
+      } catch (IOException ignored) {
+      }
+    });
 
-        ScheduledExecutorService scheduler = Executors.newScheduledThreadPool(1);
+    Thread stderrThread = new Thread(() -> {
+      try (InputStream stderr = child.getErrorStream()) {
+        byte[] buf = new byte[1024];
+        int n;
 
-        AtomicLong cpuTime = new AtomicLong(0);
-        AtomicLong cpuStart = new AtomicLong(System.currentTimeMillis());
+        while ((n = stderr.read(buf)) != -1) {
+          String chunk = new String(buf, 0, n);
+          send(sessionId, "stderr", chunk);
+        }
+      } catch (IOException ignored) {
+      }
+    });
 
-        ScheduledFuture<?> checkCpuTime = scheduler.scheduleAtFixedRate(() -> {
-            System.out.println("cpuTime: " + cpuTime);
-            cpuTime.addAndGet(System.currentTimeMillis() - cpuStart.get());
-            cpuStart.set(System.currentTimeMillis());
-            if (cpuTime.get() >= 10000) {
-                child.destroyForcibly();
-                sendError(sessionId, "CPU Time Limit Exceeded");
-            }
-        }, 500, 500, TimeUnit.MILLISECONDS);
+    stdoutThread.start();
+    stderrThread.start();
 
+    Thread waitThread = new Thread(() -> {
+      try {
+        int exitCode = child.waitFor(); // blocks until exit
 
-        Thread stdoutThread = new Thread(() -> {
-            try (InputStream stdout = child.getInputStream()) {
-                byte[] buf = new byte[1024];
-                int n;
+        stdoutThread.join();
+        stderrThread.join();
 
-                while ((n = stdout.read(buf)) != -1) {
-                    String chunk = new String(buf, 0, n);
-                    send(sessionId, "stdout", chunk);
-                }
-            } catch (IOException ignored) {
-            }
-        });
+        checkCpuTime.cancel(false);
+        scheduler.shutdown();
 
-        Thread stderrThread = new Thread(() -> {
-            try (InputStream stderr = child.getErrorStream()) {
-                byte[] buf = new byte[1024];
-                int n;
+        Map<String, Object> exitPayload = Map.of("type", "exit", "code", exitCode, "cpuTime", cpuTime.get());
 
-                while ((n = stderr.read(buf)) != -1) {
-                    String chunk = new String(buf, 0, n);
-                    send(sessionId, "stderr", chunk);
-                }
-            } catch (IOException ignored) {
-            }
-        });
+        messagingTemplate.convertAndSend("/topic/output/" + sessionId, (Object) exitPayload);
 
-        stdoutThread.start();
-        stderrThread.start();
+        cleanup.run();
 
-        Thread waitThread = new Thread(() -> {
+      } catch (InterruptedException e) {
+        Thread.currentThread().interrupt();
+      }
+    });
+
+    waitThread.start();
+    return child;
+  }
+
+  private void send(String sessionId, String type, String data) {
+    System.out.println("Sending message to: /topic/output/" + sessionId);
+    messagingTemplate.convertAndSend("/topic/output/" + sessionId, (Object) Map.of("type", type, "data", data));
+  }
+
+  private void sendError(String sessionId, String message) {
+    send(sessionId, "stderr", message);
+  }
+
+  private void deleteDir(String dirPath) {
+    Path dir = Path.of(dirPath);
+    try {
+      Files.walk(dir)
+          .sorted(Comparator.reverseOrder()) // delete children first
+          .forEach(path -> {
             try {
-                int exitCode = child.waitFor(); // blocks until exit
-
-                stdoutThread.join();
-                stderrThread.join();
-
-                checkCpuTime.cancel(false);
-                scheduler.shutdown();
-
-                Map<String, Object> exitPayload = Map.of(
-                        "type", "exit",
-                        "code", exitCode,
-                        "cpuTime", cpuTime.get()
-                );
-
-                messagingTemplate.convertAndSend("/topic/output/" + sessionId, (Object) exitPayload);
-
-                cleanup.run();
-
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
+              Files.delete(path);
+            } catch (IOException e) {
+              e.printStackTrace();
             }
-        });
-
-        waitThread.start();
-        return child;
+          });
+    } catch (IOException ignored) {
     }
-
-    private void send(String sessionId, String type, String data) {
-        System.out.println("Sending message to: /topic/output/" + sessionId);
-        messagingTemplate.convertAndSend("/topic/output/" + sessionId, (Object) Map.of("type", type, "data", data));
-    }
-
-    private void sendError(String sessionId, String message) {
-        send(sessionId, "stderr", message);
-    }
+  }
 }

@@ -27,8 +27,6 @@ public class ExecutionController {
         if (existing != null && existing.isAlive()) {
             existing.destroyForcibly();
         }
-        System.out.println("is is getting restarted? is it really?");
-        System.out.println("inputString:" + request.getInputString());
 
         Process handle = executorService.execute(
                 request.getLang(),
