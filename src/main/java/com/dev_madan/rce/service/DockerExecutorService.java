@@ -1,10 +1,12 @@
 package com.dev_madan.rce.service;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
+import lombok.AllArgsConstructor;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.messaging.simp.SimpMessagingTemplate;
 import org.springframework.stereotype.Service;
 
-import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.file.Files;
@@ -19,15 +21,19 @@ import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 
+
 @Service
 public class DockerExecutorService {
   @Value("${app.host-temp-path:}")
   private String hostTempPath;
 
-  private final SimpMessagingTemplate messagingTemplate;
+  private final RedisTemplate<String, String> redisTemplate;
+  private final ObjectMapper objectMapper;
 
-  public DockerExecutorService(SimpMessagingTemplate messagingTemplate) {
-    this.messagingTemplate = messagingTemplate;
+  public DockerExecutorService(RedisTemplate<String, String> redisTemplate,
+                               ObjectMapper objectMapper) {
+    this.redisTemplate = redisTemplate;
+    this.objectMapper = objectMapper;
   }
 
   private Process executePython(String code, String inputString, String sessionId) {
@@ -172,12 +178,16 @@ public class DockerExecutorService {
 
         Map<String, Object> exitPayload = Map.of("type", "exit", "code", exitCode, "cpuTime", cpuTime.get());
 
-        messagingTemplate.convertAndSend("/topic/output/" + sessionId, (Object) exitPayload);
+        String exitJson = objectMapper.writeValueAsString(exitPayload); // serialize to JSON string
+
+        redisTemplate.convertAndSend("output:" + sessionId, exitJson);
 
         cleanup.run();
 
       } catch (InterruptedException e) {
         Thread.currentThread().interrupt();
+      } catch (Exception e) {
+        e.printStackTrace();
       }
     });
 
@@ -186,8 +196,16 @@ public class DockerExecutorService {
   }
 
   private void send(String sessionId, String type, String data) {
-    System.out.println("Sending message to: /topic/output/" + sessionId);
-    messagingTemplate.convertAndSend("/topic/output/" + sessionId, (Object) Map.of("type", type, "data", data));
+    System.out.println("Sending message to output:" + sessionId);
+    try {
+      String payload = objectMapper.writeValueAsString(Map.of("type", type, "data", data));
+      redisTemplate.convertAndSend("output:" + sessionId, payload);
+      // stores message in channel "output:abc123"
+      // looks up all the subscribers of "output:abc123"
+      // delivers message to each subscriber (it delivers to spring listener)
+      // when Redis delivers a message, it calls your registered listener (redisMessageListenerContainer with channel name -> "output:" + sessionId)
+    } catch (Exception ignored) {
+    }
   }
 
   private void sendError(String sessionId, String message) {
