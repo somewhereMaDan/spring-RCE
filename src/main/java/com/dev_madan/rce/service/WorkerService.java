@@ -24,6 +24,7 @@ public class WorkerService {
   private static final int WORKER_COUNT = 8;
   private volatile boolean running = true;
 
+  // "run this method automatically after Spring has finished creating and injecting all dependencies into this bean"
   @PostConstruct
   public void startWorkers(){
     for(int i = 0; i < WORKER_COUNT; i++){

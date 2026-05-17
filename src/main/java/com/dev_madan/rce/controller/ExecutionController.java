@@ -4,13 +4,17 @@ import com.dev_madan.rce.dto.RunRequest;
 import com.dev_madan.rce.service.SessionRegistry;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.AllArgsConstructor;
+import org.springframework.context.event.EventListener;
 import org.springframework.data.redis.connection.MessageListener;
 import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.data.redis.listener.ChannelTopic;
 import org.springframework.data.redis.listener.RedisMessageListenerContainer;
 import org.springframework.messaging.handler.annotation.MessageMapping;
 import org.springframework.messaging.simp.SimpMessagingTemplate;
+import org.springframework.messaging.simp.stomp.StompHeaderAccessor;
 import org.springframework.stereotype.Controller;
+import org.springframework.web.socket.messaging.SessionConnectEvent;
+import org.springframework.web.socket.messaging.SessionDisconnectEvent;
 
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -25,7 +29,21 @@ public class ExecutionController {
   private final RedisTemplate<String, String> redisT;
   private static final String JOB_QUEUE = "rce:jobs";
 
+  private final Map<String, String>  springToClientSession = new ConcurrentHashMap<>();
   private final Map<String, MessageListener> listenerMap = new ConcurrentHashMap<>();
+
+  @EventListener
+  public void handleConnect(SessionConnectEvent event){
+    StompHeaderAccessor accessor = StompHeaderAccessor.wrap(event.getMessage());
+    // StompHeaderAccessor is a Spring class used to read and modify STOMP message headers in WebSocket messaging.
+
+    String springSessionId = accessor.getSessionId();
+    String clientSessionId = accessor.getFirstNativeHeader("sessionId");
+
+    if(clientSessionId != null){
+      springToClientSession.put(springSessionId, clientSessionId);
+    }
+  }
 
   @MessageMapping("/run")
   public void handleRun(RunRequest request) {
@@ -61,6 +79,20 @@ public class ExecutionController {
       redisT.opsForList().rightPush(JOB_QUEUE, json);
     } catch (Exception e) {
       e.printStackTrace();
+    }
+  }
+
+  @EventListener
+  public void handleDisconnect(SessionDisconnectEvent event){
+    String springSessionId = event.getSessionId();
+    String clientSessionId = springToClientSession.remove(springSessionId);
+
+    if(clientSessionId != null){
+      sessionReg.killIfExists(clientSessionId);
+      MessageListener listener = listenerMap.remove(clientSessionId);
+      if(listener != null){
+        redisMessageListenerContainer.removeMessageListener(listener);
+      }
     }
   }
 }

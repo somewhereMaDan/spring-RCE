@@ -29,11 +29,13 @@ public class DockerExecutorService {
 
   private final RedisTemplate<String, String> redisTemplate;
   private final ObjectMapper objectMapper;
+  private final SessionRegistry sessionReg;
 
   public DockerExecutorService(RedisTemplate<String, String> redisTemplate,
-                               ObjectMapper objectMapper) {
+                               ObjectMapper objectMapper, SessionRegistry sessionReg) {
     this.redisTemplate = redisTemplate;
     this.objectMapper = objectMapper;
+    this.sessionReg = sessionReg;
   }
 
   private Process executePython(String code, String inputString, String sessionId) {
@@ -50,6 +52,8 @@ public class DockerExecutorService {
       sendError(sessionId, "Failed to write code on file: " + e.getMessage());
       return null;
     }
+
+    // we never close the input stream
 
     List<String> cmd = List.of("docker", "run", "--rm",
         "-i", "--memory=256m", "--cpus=0.5", "--network", "none",
@@ -108,6 +112,11 @@ public class DockerExecutorService {
     Process child;
     try {
       child = new ProcessBuilder(cmd).redirectErrorStream(false).start();
+
+      // register immediately after spawning — before threads start
+      sessionReg.register(sessionId, child);
+      // This way the process is registered the moment Docker spawns — not after execution finishes.
+      // If disconnect fires during execution, killIfExists finds the process and destroys it.
 
       if (inputString != null && !inputString.isBlank()) {
         String normalized = inputString.endsWith("\n") ? inputString : inputString + "\n";
@@ -183,6 +192,12 @@ public class DockerExecutorService {
         redisTemplate.convertAndSend("output:" + sessionId, exitJson);
 
         cleanup.run();
+
+        // Every execution adds an entry, nothing ever removes it.
+        // After thousands of executions the map holds thousands of dead Process references.
+        // that's why
+        sessionReg.removeProcess(sessionId);
+
 
       } catch (InterruptedException e) {
         Thread.currentThread().interrupt();
