@@ -1,9 +1,12 @@
 package com.dev_madan.rce.service;
 
+import com.dev_madan.rce.controller.ExecutionController;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.AllArgsConstructor;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.data.redis.connection.MessageListener;
 import org.springframework.data.redis.core.RedisTemplate;
+import org.springframework.data.redis.listener.RedisMessageListenerContainer;
 import org.springframework.messaging.simp.SimpMessagingTemplate;
 import org.springframework.stereotype.Service;
 
@@ -32,13 +35,14 @@ public class DockerExecutorService {
   private final SessionRegistry sessionReg;
 
   public DockerExecutorService(RedisTemplate<String, String> redisTemplate,
-                               ObjectMapper objectMapper, SessionRegistry sessionReg) {
+                               ObjectMapper objectMapper, SessionRegistry sessionReg, ExecutionController exeController,
+                               RedisMessageListenerContainer redisMessageListenerContainer) {
     this.redisTemplate = redisTemplate;
     this.objectMapper = objectMapper;
     this.sessionReg = sessionReg;
   }
 
-  private Process executePython(String code, String inputString, String sessionId) {
+  private Process executePython(String code, String inputString, String sessionId, Runnable listenerCleanup) {
     String jobId = UUID.randomUUID().toString();
     String filename = jobId + ".py";
     Path containerTempDir = Path.of(hostTempPath.isBlank() ? "/app/temp" : hostTempPath);
@@ -54,7 +58,6 @@ public class DockerExecutorService {
     }
 
     // we never close the input stream
-
     List<String> cmd = List.of("docker", "run", "--rm",
         "-i", "--memory=256m", "--cpus=0.5", "--network", "none",
         "-v", String.format("%s:/code", hostTempDir),
@@ -65,10 +68,10 @@ public class DockerExecutorService {
         Files.deleteIfExists(filepath);
       } catch (IOException ignored) {
       }
-    });
+    }, listenerCleanup);
   }
 
-  private Process executeJava(String code, String inputString, String sessionId) {
+  private Process executeJava(String code, String inputString, String sessionId, Runnable listenerCleanup) {
     String jobId = UUID.randomUUID().toString();
     String filename = "Main.java";
     Path containerTempDir = Path.of(hostTempPath.isBlank() ? "/app/temp" : hostTempPath, jobId);
@@ -92,14 +95,14 @@ public class DockerExecutorService {
 
     return startProcess(cmd, inputString, sessionId, () -> {
       deleteDir(containerTempDir.toString());
-    });
+    }, listenerCleanup);
   }
 
 
-  public Process execute(String lang, String code, String inputString, String sessionId) {
+  public Process execute(String lang, String code, String inputString, String sessionId, Runnable listenerCleanup) {
     return switch (lang) {
-      case "python" -> executePython(code, inputString, sessionId);
-      case "java" -> executeJava(code, inputString, sessionId);
+      case "python" -> executePython(code, inputString, sessionId, listenerCleanup);
+      case "java" -> executeJava(code, inputString, sessionId, listenerCleanup);
 //            case "cpp" -> executeCpp(code, sessionId);
       default -> {
         sendError(sessionId, "Unsupported language: " + lang);
@@ -108,7 +111,7 @@ public class DockerExecutorService {
     };
   }
 
-  private Process startProcess(List<String> cmd, String inputString, String sessionId, Runnable cleanup) {
+  private Process startProcess(List<String> cmd, String inputString, String sessionId, Runnable cleanup, Runnable listenerCleanup) {
     Process child;
     try {
       child = new ProcessBuilder(cmd).redirectErrorStream(false).start();
@@ -198,6 +201,7 @@ public class DockerExecutorService {
         // that's why
         sessionReg.removeProcess(sessionId);
 
+        listenerCleanup.run();
 
       } catch (InterruptedException e) {
         Thread.currentThread().interrupt();

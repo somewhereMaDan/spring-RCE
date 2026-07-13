@@ -29,18 +29,17 @@ public class ExecutionController {
   private final RedisTemplate<String, String> redisT;
   private static final String JOB_QUEUE = "rce:jobs";
 
-  private final Map<String, String>  springToClientSession = new ConcurrentHashMap<>();
-  private final Map<String, MessageListener> listenerMap = new ConcurrentHashMap<>();
+  private final Map<String, String> springToClientSession = new ConcurrentHashMap<>();
 
   @EventListener
-  public void handleConnect(SessionConnectEvent event){
+  public void handleConnect(SessionConnectEvent event) {
     StompHeaderAccessor accessor = StompHeaderAccessor.wrap(event.getMessage());
     // StompHeaderAccessor is a Spring class used to read and modify STOMP message headers in WebSocket messaging.
 
     String springSessionId = accessor.getSessionId();
     String clientSessionId = accessor.getFirstNativeHeader("sessionId");
 
-    if(clientSessionId != null){
+    if (clientSessionId != null) {
       springToClientSession.put(springSessionId, clientSessionId);
     }
   }
@@ -49,8 +48,8 @@ public class ExecutionController {
   public void handleRun(RunRequest request) {
     String sessionId = request.getSessionId();
 
-    MessageListener oldListener = listenerMap.get(sessionId);
-    if(oldListener != null){
+    MessageListener oldListener = sessionReg.removeListener(sessionId);
+    if (oldListener != null) {
       redisMessageListenerContainer.removeMessageListener(oldListener);
     }
     // Kill existing process if user clicks on run again
@@ -70,8 +69,7 @@ public class ExecutionController {
         listener,
         new ChannelTopic("output:" + sessionId)
     );
-    listenerMap.put(sessionId, listener);
-    System.out.println("listenerMap: " + listenerMap);
+    sessionReg.registerListener(sessionId, listener);
 
     // push job to queue after subscribing so we don't lose any chunks
     try {
@@ -83,14 +81,14 @@ public class ExecutionController {
   }
 
   @EventListener
-  public void handleDisconnect(SessionDisconnectEvent event){
+  public void handleDisconnect(SessionDisconnectEvent event) {
     String springSessionId = event.getSessionId();
     String clientSessionId = springToClientSession.remove(springSessionId);
 
-    if(clientSessionId != null){
+    if (clientSessionId != null) {
       sessionReg.killIfExists(clientSessionId);
-      MessageListener listener = listenerMap.remove(clientSessionId);
-      if(listener != null){
+      MessageListener listener = sessionReg.removeListener(clientSessionId);
+      if (listener != null) {
         redisMessageListenerContainer.removeMessageListener(listener);
       }
     }

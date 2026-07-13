@@ -1,6 +1,4 @@
 package com.dev_madan.rce.config;
-
-
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -12,7 +10,6 @@ import org.springframework.data.redis.serializer.StringRedisSerializer;
 
 @Configuration
 public class RedisConfig {
-
   // to push or pop from the queue
   @Primary
   @Bean

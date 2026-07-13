@@ -5,7 +5,9 @@ import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
 import lombok.AllArgsConstructor;
 import lombok.RequiredArgsConstructor;
+import org.springframework.data.redis.connection.MessageListener;
 import org.springframework.data.redis.core.RedisTemplate;
+import org.springframework.data.redis.listener.RedisMessageListenerContainer;
 import org.springframework.stereotype.Service;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
@@ -15,6 +17,7 @@ import java.time.Duration;
 @Service
 
 public class WorkerService {
+  private final RedisMessageListenerContainer redisMessageListenerContainer;
   private final DockerExecutorService dockerExecService;
   private final RedisTemplate<String, String> redisT;
   private final ObjectMapper objMap;
@@ -49,16 +52,20 @@ public class WorkerService {
         // if users clicks run again
         sessionReg.killIfExists(jobData.getSessionId());
 
+        Runnable listenerCleanup = () -> {
+          MessageListener listener = sessionReg.removeListener(jobData.getSessionId());
+          if (listener != null) {
+            redisMessageListenerContainer.removeMessageListener(listener);
+          }
+        };
+
         Process handle = dockerExecService.execute(
             jobData.getLang(),
             jobData.getCode(),
             jobData.getInputString(),
-            jobData.getSessionId()
+            jobData.getSessionId(),
+            listenerCleanup
         );
-
-        if(handle != null){
-          sessionReg.register(jobData.getSessionId(), handle);
-        }
       }catch (Exception e){
         if (!running) break;
 //        e.printStackTrace();
