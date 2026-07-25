@@ -1,15 +1,5 @@
 package com.dev_madan.rce.service;
 
-import com.dev_madan.rce.controller.ExecutionController;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import lombok.AllArgsConstructor;
-import org.springframework.beans.factory.annotation.Value;
-import org.springframework.data.redis.connection.MessageListener;
-import org.springframework.data.redis.core.RedisTemplate;
-import org.springframework.data.redis.listener.RedisMessageListenerContainer;
-import org.springframework.messaging.simp.SimpMessagingTemplate;
-import org.springframework.stereotype.Service;
-
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.file.Files;
@@ -21,9 +11,17 @@ import java.util.UUID;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.data.redis.core.RedisTemplate;
+import org.springframework.data.redis.listener.RedisMessageListenerContainer;
+import org.springframework.stereotype.Service;
+
+import com.dev_madan.rce.controller.ExecutionController;
+import com.fasterxml.jackson.databind.ObjectMapper;
 
 @Service
 public class DockerExecutorService {
@@ -33,13 +31,16 @@ public class DockerExecutorService {
   private final RedisTemplate<String, String> redisTemplate;
   private final ObjectMapper objectMapper;
   private final SessionRegistry sessionReg;
+  private final Semaphore containerSlots;
 
   public DockerExecutorService(RedisTemplate<String, String> redisTemplate,
-                               ObjectMapper objectMapper, SessionRegistry sessionReg, ExecutionController exeController,
-                               RedisMessageListenerContainer redisMessageListenerContainer) {
+      ObjectMapper objectMapper, SessionRegistry sessionReg, ExecutionController exeController,
+      RedisMessageListenerContainer redisMessageListenerContainer,
+      @Value("${rce.docker.max-concurrent:6}") int maxConcurrent) {
     this.redisTemplate = redisTemplate;
     this.objectMapper = objectMapper;
     this.sessionReg = sessionReg;
+    this.containerSlots = new Semaphore(maxConcurrent);
   }
 
   private Process executePython(String code, String inputString, String sessionId, Runnable listenerCleanup) {
@@ -47,7 +48,8 @@ public class DockerExecutorService {
     String filename = jobId + ".py";
     Path containerTempDir = Path.of(hostTempPath.isBlank() ? "/app/temp" : hostTempPath);
     Path filepath = containerTempDir.resolve(filename);
-    String hostTempDir = hostTempPath.isBlank() ? containerTempDir.toString().replace("\\", "/") : hostTempPath.replace("\\", "/");
+    String hostTempDir = hostTempPath.isBlank() ? containerTempDir.toString().replace("\\", "/")
+        : hostTempPath.replace("\\", "/");
 
     try {
       Files.createDirectories(containerTempDir);
@@ -98,12 +100,11 @@ public class DockerExecutorService {
     }, listenerCleanup);
   }
 
-
   public Process execute(String lang, String code, String inputString, String sessionId, Runnable listenerCleanup) {
     return switch (lang) {
       case "python" -> executePython(code, inputString, sessionId, listenerCleanup);
       case "java" -> executeJava(code, inputString, sessionId, listenerCleanup);
-//            case "cpp" -> executeCpp(code, sessionId);
+      // case "cpp" -> executeCpp(code, sessionId);
       default -> {
         sendError(sessionId, "Unsupported language: " + lang);
         yield null;
@@ -111,15 +112,27 @@ public class DockerExecutorService {
     };
   }
 
-  private Process startProcess(List<String> cmd, String inputString, String sessionId, Runnable cleanup, Runnable listenerCleanup) {
+  private Process startProcess(List<String> cmd, String inputString, String sessionId, Runnable cleanup,
+      Runnable listenerCleanup) {
+    try {
+      containerSlots.acquire();
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
+      sendError(sessionId, "Interrupted while sending waiting for an execution slot");
+      cleanup.run();
+      return null;
+    }
+
     Process child;
     try {
       child = new ProcessBuilder(cmd).redirectErrorStream(false).start();
 
       // register immediately after spawning — before threads start
       sessionReg.register(sessionId, child);
-      // This way the process is registered the moment Docker spawns — not after execution finishes.
-      // If disconnect fires during execution, killIfExists finds the process and destroys it.
+      // This way the process is registered the moment Docker spawns — not after
+      // execution finishes.
+      // If disconnect fires during execution, killIfExists finds the process and
+      // destroys it.
 
       if (inputString != null && !inputString.isBlank()) {
         String normalized = inputString.endsWith("\n") ? inputString : inputString + "\n";
@@ -130,6 +143,7 @@ public class DockerExecutorService {
     } catch (IOException e) {
       sendError(sessionId, "Failed to start Docker: " + e.getMessage());
       cleanup.run();
+      containerSlots.release();
       return null;
     }
 
@@ -147,7 +161,6 @@ public class DockerExecutorService {
         sendError(sessionId, "CPU Time Limit Exceeded");
       }
     }, 500, 500, TimeUnit.MILLISECONDS);
-
 
     Thread stdoutThread = new Thread(() -> {
       try (InputStream stdout = child.getInputStream()) {
@@ -197,7 +210,8 @@ public class DockerExecutorService {
         cleanup.run();
 
         // Every execution adds an entry, nothing ever removes it.
-        // After thousands of executions the map holds thousands of dead Process references.
+        // After thousands of executions the map holds thousands of dead Process
+        // references.
         // that's why
         sessionReg.removeProcess(sessionId);
 
@@ -207,6 +221,8 @@ public class DockerExecutorService {
         Thread.currentThread().interrupt();
       } catch (Exception e) {
         e.printStackTrace();
+      }finally{
+        containerSlots.release();
       }
     });
 
@@ -222,7 +238,8 @@ public class DockerExecutorService {
       // stores message in channel "output:abc123"
       // looks up all the subscribers of "output:abc123"
       // delivers message to each subscriber (it delivers to spring listener)
-      // when Redis delivers a message, it calls your registered listener (redisMessageListenerContainer with channel name -> "output:" + sessionId)
+      // when Redis delivers a message, it calls your registered listener
+      // (redisMessageListenerContainer with channel name -> "output:" + sessionId)
     } catch (Exception ignored) {
     }
   }
