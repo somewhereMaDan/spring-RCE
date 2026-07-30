@@ -18,7 +18,31 @@ Judge0-style code execution engine — supports Python, Java, and C++, executes 
 - stdout / stderr / exit status stream back to the originating client live via Redis Pub/Sub → STOMP
 - Originally built in Node.js, fully migrated to Spring Boot for better thread control and JVM-native concurrency primitives
 
-<img width="667" height="653" alt="image" src="https://github.com/user-attachments/assets/e235eb2e-8fbb-46d3-b6a3-383c0eb3034b" />
+Client (WebSocket/STOMP)
+        │
+        ▼
+ExecutionController (@MessageMapping)
+        │
+        ▼
+Redis Queue  →  rce:jobs (FIFO, LPUSH / RPOP)
+        │
+        ▼
+Worker Pool (8 threads, @PostConstruct)
+        │  each worker blocks on semaphore.acquire()
+        ▼
+Semaphore (N permits)  →  caps concurrent Docker containers
+        │
+        ▼
+DockerExecutorService (ProcessBuilder)
+        │  spawns container → executes code → captures stdout/stderr → enforces timeout
+        ▼
+Redis Pub/Sub  →  output:{sessionId}
+        │
+        ▼
+STOMP  →  back to client (live stdout/stderr + final exit payload)
+        │
+        ▼
+Container --rm'd · temp dir deleted · SessionRegistry entry cleared · permit released
 
 📊 Load Testing & Benchmarks
 
@@ -43,8 +67,16 @@ Key finding: container concurrency stayed flat at the permit count regardless of
 - Workers that can't acquire a permit block cleanly on semaphore.acquire() — no busy-waiting, no wasted CPU
 - Permit count is a single tunable constant — scales up or down based on host resources, no architectural change needed
 
-<img width="678" height="417" alt="image" src="https://github.com/user-attachments/assets/ff945bb7-98ec-481c-ad39-8d7cc9eaa883" />
-Java 17 not 21
+🛠️ Tech Stack
+- Layer	Technology
+- Backend	Java 17, Spring Boot
+- Real-time transport	WebSocket + STOMP (SockJS)
+- Queueing	Redis (FIFO List)
+- Pub/Sub streaming	Redis Pub/Sub
+- Sandboxing	Docker (ProcessBuilder, --rm, per-container memory/CPU limits)
+- Frontend	React (Vite)
+- Deployment (dev)	WSL2 + Cloudflare Tunnel
+- Deployment (target)	AWS EC2
 
 🚀 Getting Started
 # clone
