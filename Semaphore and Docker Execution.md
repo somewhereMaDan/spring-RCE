@@ -488,3 +488,64 @@
 
 
                     ---
+
+in your design, the semaphore limit effectively becomes the maximum number of simultaneously running Docker containers
+
+**mental model 
+8 Worker Threads (permanent)
+
+                |
+                |  gets Redis job
+                v
+
+        Starts Docker Process
+
+                |
+                +---- stdoutThread (temporary)
+                |
+                +---- stderrThread (temporary)
+                |
+                +---- waitThread   (temporary)
+
+                |
+        Docker exits
+                |
+      helper threads finish
+                |
+      semaphore permit released
+                |
+      worker thread continues to process another Redis job
+
+**Why does this naturally create backpressure?
+
+Because your workers look like this:
+
+Get Job
+
+↓
+
+execute()
+
+↓
+
+Get Next Job
+
+If
+
+execute()
+
+blocks on
+
+acquire();
+
+the worker cannot reach
+
+Get Next Job
+
+So it stops pulling jobs from Redis.
+
+The queue begins filling up instead of launching hundreds of containers.
+
+That's called backpressure.
+
+The jobs wait safely in Redis until capacity becomes available.

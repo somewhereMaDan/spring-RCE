@@ -61,7 +61,7 @@ public class DockerExecutorService {
 
     // we never close the input stream
     List<String> cmd = List.of("docker", "run", "--rm",
-        "-i", "--memory=256m", "--cpus=0.5", "--network", "none",
+        "-i", "--memory=128m", "--cpus=0.25", "--network", "none",
         "-v", String.format("%s:/code", hostTempDir),
         "python-runner", "python", "-u", String.format("/code/%s", filename));
 
@@ -91,7 +91,7 @@ public class DockerExecutorService {
     }
 
     List<String> cmd = List.of("docker", "run", "--rm",
-        "-i", "--memory=256m", "--cpus=0.5", "--network", "none",
+        "-i", "--memory=128m", "--cpus=0.25", "--network", "none",
         "-v", String.format("%s:/code", containerTempDir.toString()), "java-runner", "sh", "-c",
         String.format("javac /code/%s && java -cp /code Main", filename));
 
@@ -129,6 +129,7 @@ public class DockerExecutorService {
 
       // register immediately after spawning — before threads start
       sessionReg.register(sessionId, child);
+      send(sessionId, "status", "now running...");
       // This way the process is registered the moment Docker spawns — not after
       // execution finishes.
       // If disconnect fires during execution, killIfExists finds the process and
@@ -206,22 +207,18 @@ public class DockerExecutorService {
         String exitJson = objectMapper.writeValueAsString(exitPayload); // serialize to JSON string
 
         redisTemplate.convertAndSend("output:" + sessionId, exitJson);
-
+      } catch (InterruptedException e) {
+        Thread.currentThread().interrupt();
+      } catch (Exception e) {
+        System.err.println("Error while completion of Docker container: " + e.getMessage());
+      }finally{
         cleanup.run();
-
         // Every execution adds an entry, nothing ever removes it.
         // After thousands of executions the map holds thousands of dead Process
         // references.
         // that's why
         sessionReg.removeProcess(sessionId);
-
         listenerCleanup.run();
-
-      } catch (InterruptedException e) {
-        Thread.currentThread().interrupt();
-      } catch (Exception e) {
-        e.printStackTrace();
-      }finally{
         containerSlots.release();
       }
     });
@@ -257,7 +254,7 @@ public class DockerExecutorService {
             try {
               Files.delete(path);
             } catch (IOException e) {
-              e.printStackTrace();
+              System.out.println("Failed to delete: " + path + ": " + e.getMessage());
             }
           });
     } catch (IOException ignored) {

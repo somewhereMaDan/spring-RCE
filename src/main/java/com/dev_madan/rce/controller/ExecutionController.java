@@ -30,13 +30,15 @@ public class ExecutionController {
   private final ObjectMapper objMap;
   private final RedisTemplate<String, String> redisT;
   private static final String JOB_QUEUE = "rce:jobs";
+  private static final int HARD_SAFETY_LIMIT = 5000;
 
   private final Map<String, String> springToClientSession = new ConcurrentHashMap<>();
 
   @EventListener
   public void handleConnect(SessionConnectEvent event) {
     StompHeaderAccessor accessor = StompHeaderAccessor.wrap(event.getMessage());
-    // StompHeaderAccessor is a Spring class used to read and modify STOMP message headers in WebSocket messaging.
+    // StompHeaderAccessor is a Spring class used to read and modify STOMP message
+    // headers in WebSocket messaging.
 
     String springSessionId = accessor.getSessionId();
     String clientSessionId = accessor.getFirstNativeHeader("sessionId");
@@ -61,25 +63,42 @@ public class ExecutionController {
       String payload = new String(message.getBody());
       simpMessagingTemplate.convertAndSend(
           "/topic/output/" + sessionId,
-          (Object) payload
-      );
+          (Object) payload);
     });
 
-    // I want to receive any message published to this channel. You become a subscriber.
+    // I want to receive any message published to this channel. You become a
+    // subscriber.
     // "Hey Redis, I want to receive messages on channel output:abc123"
     redisMessageListenerContainer.addMessageListener(
         listener,
-        new ChannelTopic("output:" + sessionId)
-    );
+        new ChannelTopic("output:" + sessionId));
     sessionReg.registerListener(sessionId, listener);
+
+    Long jobsAhead = redisT.opsForList().size(JOB_QUEUE);
+
+    if (jobsAhead != null && jobsAhead > HARD_SAFETY_LIMIT) {
+      // rejects immediately, system at capacity
+      MessageListener leaked = sessionReg.removeListener(sessionId);
+      if (leaked != null)
+        redisMessageListenerContainer.removeMessageListener(leaked);
+      sendStatus(sessionId, "error", "System is overloaded. Please try again shortly.");
+      return;
+    }
 
     // push job to queue after subscribing so we don't lose any chunks
     try {
       String json = objMap.writeValueAsString(request);
       redisT.opsForList().rightPush(JOB_QUEUE, json);
+
+      long position = (jobsAhead == null ? 0 : jobsAhead) + 1;
+      sendStatus(sessionId, "queued",  "Queued — position: " + position);
     } catch (Exception e) {
-      e.printStackTrace();
+      System.err.println("Error while pushing the job into the queue: " + e.getMessage());
     }
+  }
+
+  private void sendStatus(String sessionId, String type, String message) {
+    simpMessagingTemplate.convertAndSend("/topic/output/" + sessionId, (Object) Map.of("type", type, "data", message));
   }
 
   @EventListener
