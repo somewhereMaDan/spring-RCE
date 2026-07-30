@@ -18,33 +18,7 @@ Judge0-style code execution engine — supports Python, Java, and C++, executes 
 - stdout / stderr / exit status stream back to the originating client live via Redis Pub/Sub → STOMP
 - Originally built in Node.js, fully migrated to Spring Boot for better thread control and JVM-native concurrency primitives
 
-🔁 Execution Flow
-
-Client (WebSocket/STOMP)
-        │
-        ▼
-ExecutionController (@MessageMapping)
-        │
-        ▼
-Redis Queue  →  rce:jobs (FIFO, LPUSH / RPOP)
-        │
-        ▼
-Worker Pool (8 threads, @PostConstruct)
-        │  each worker blocks on semaphore.acquire()
-        ▼
-Semaphore (N permits)  →  caps concurrent Docker containers
-        │
-        ▼
-DockerExecutorService (ProcessBuilder)
-        │  spawns container → executes code → captures stdout/stderr → enforces timeout
-        ▼
-Redis Pub/Sub  →  output:{sessionId}
-        │
-        ▼
-STOMP  →  back to client (live stdout/stderr + final exit payload)
-        │
-        ▼
-Container --rm'd · temp dir deleted · SessionRegistry entry cleared · permit released
+<img width="667" height="653" alt="image" src="https://github.com/user-attachments/assets/e235eb2e-8fbb-46d3-b6a3-383c0eb3034b" />
 
 📊 Load Testing & Benchmarks
 
