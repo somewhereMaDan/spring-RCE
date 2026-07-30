@@ -1,6 +1,10 @@
 <div align="center">
-##⚡ RCE Engine
-A concurrent, sandboxed Remote Code Execution engine — built on Spring Boot, Docker & Redis
+
+<h1>⚡ RCE Engine</h1>
+
+<p><strong>A concurrent, sandboxed Remote Code Execution engine — built on Spring Boot, Docker & Redis</strong></p>
+
+<br>
 
 <img width="1920" height="1080" alt="image" src="https://github.com/user-attachments/assets/11400492-1c0b-493f-a2d1-d21f9eb61f48" />
 <img width="1920" height="1080" alt="image" src="https://github.com/user-attachments/assets/88fa612f-b94b-4ea0-bc74-143ec90d4ecd" />
@@ -10,7 +14,7 @@ Judge0-style code execution engine — supports Python, Java, and C++, executes 
 
 </div>
 
-📌 Overview
+## 📌 Overview
 - Accepts code submissions (Python / Java / C++) over WebSocket (STOMP)
 - Queues execution requests in Redis (FIFO) — decouples request intake from execution
 - A fixed worker pool pulls jobs off the queue and hands them to a semaphore-gated Docker execution layer
@@ -32,7 +36,7 @@ flowchart TD
     H --> I["Cleanup: container --rm'd, temp dir deleted, SessionRegistry cleared, permit released"]
 ```
 
-📊 Load Testing & Benchmarks
+## 📊 Load Testing & Benchmarks
 
 - Stress-tested locally (WSL2, 16 vCPU / 7.4GB RAM) before any cloud deployment, to validate the concurrency model under real load — not just assumed.
 
@@ -40,13 +44,13 @@ flowchart TD
 Key finding: container concurrency stayed flat at the permit count regardless of whether 20 or 60 jobs were queued — confirming the queue + semaphore split works as designed under 10x burst load.
 <img width="1456" height="819" alt="image" src="https://github.com/user-attachments/assets/09afdd66-aca5-4662-80b1-86addc3f08ac" />
 
-🧵 Concurrency & Scalability Design
+## 🧵 Concurrency & Scalability Design
 
 - The core problem: N users can hit "Run" at the same time — the system must stay responsive without letting the host get overwhelmed.
 
 - The solution — three independent layers, each bounded differently:
 
-**Layer	Mechanism	What it protects
+## Layer Mechanism, What it protects
 - Intake	Redis Queue (rce:jobs)	Absorbs unlimited simultaneous submissions instantly — Redis handles this trivially
 - Dispatch	8-thread Worker Pool	Pulls jobs off the queue continuously, in parallel
 - Execution	Semaphore (N permits)	Hard ceiling on concurrent Docker containers — the actual expensive resource
@@ -55,7 +59,7 @@ Key finding: container concurrency stayed flat at the permit count regardless of
 - Workers that can't acquire a permit block cleanly on semaphore.acquire() — no busy-waiting, no wasted CPU
 - Permit count is a single tunable constant — scales up or down based on host resources, no architectural change needed
 
-🛠️ Tech Stack
+## 🛠️ Tech Stack
 - Layer	Technology
 - Backend	Java 17, Spring Boot
 - Real-time transport	WebSocket + STOMP (SockJS)
@@ -102,7 +106,7 @@ Built by Madan Mohan Kumar — https://github.com/somewhereMaDan · [LinkedIn](h
 
 </div>
 
-✅ Core Features
+## ✅ Core Features
  - Multi-language sandboxed execution — Python, Java, C++
  - Real-time output streaming over WebSocket/STOMP (not polling)
  - Redis-backed FIFO job queue — decouples ingestion from execution
