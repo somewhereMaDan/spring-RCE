@@ -11,12 +11,12 @@ Judge0-style code execution engine — supports Python, Java, and C++, executes 
 </div>
 
 📌 Overview
-Accepts code submissions (Python / Java / C++) over WebSocket (STOMP)
-Queues execution requests in Redis (FIFO) — decouples request intake from execution
-A fixed worker pool pulls jobs off the queue and hands them to a semaphore-gated Docker execution layer
-Each job runs in an isolated, auto-deleted (--rm) container with a hard memory cap and wall-clock timeout
-stdout / stderr / exit status stream back to the originating client live via Redis Pub/Sub → STOMP
-Originally built in Node.js, fully migrated to Spring Boot for better thread control and JVM-native concurrency primitives
+- Accepts code submissions (Python / Java / C++) over WebSocket (STOMP)
+- Queues execution requests in Redis (FIFO) — decouples request intake from execution
+- A fixed worker pool pulls jobs off the queue and hands them to a semaphore-gated Docker execution layer
+- Each job runs in an isolated, auto-deleted (--rm) container with a hard memory cap and wall-clock timeout
+- stdout / stderr / exit status stream back to the originating client live via Redis Pub/Sub → STOMP
+- Originally built in Node.js, fully migrated to Spring Boot for better thread control and JVM-native concurrency primitives
 
 🔁 Execution Flow
 
@@ -69,13 +69,13 @@ Key finding: container concurrency stayed flat at the permit count regardless of
 - Workers that can't acquire a permit block cleanly on semaphore.acquire() — no busy-waiting, no wasted CPU
 - Permit count is a single tunable constant — scales up or down based on host resources, no architectural change needed
 
-🛠️ Tech Stack
-<img width="682" height="369" alt="image" src="https://github.com/user-attachments/assets/61c1a64c-3d10-48b6-a484-63035087197c" />
+<img width="678" height="417" alt="image" src="https://github.com/user-attachments/assets/ff945bb7-98ec-481c-ad39-8d7cc9eaa883" />
+Java 17 not 21
 
 🚀 Getting Started
 # clone
-- git clone https://github.com/somewhereMaDan/<repo-name>.git
-- cd <repo-name>
+- git clone https://github.com/somewhereMaDan/spring-RCE
+- cd spring-RCE
 
 # start Redis
 - docker run -d -p 6379:6379 redis:latest
