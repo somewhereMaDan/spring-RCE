@@ -18,31 +18,19 @@ Judge0-style code execution engine — supports Python, Java, and C++, executes 
 - stdout / stderr / exit status stream back to the originating client live via Redis Pub/Sub → STOMP
 - Originally built in Node.js, fully migrated to Spring Boot for better thread control and JVM-native concurrency primitives
 
-Client (WebSocket/STOMP)
-        │
-        ▼
-ExecutionController (@MessageMapping)
-        │
-        ▼
-Redis Queue  →  rce:jobs (FIFO, LPUSH / RPOP)
-        │
-        ▼
-Worker Pool (8 threads, @PostConstruct)
-        │  each worker blocks on semaphore.acquire()
-        ▼
-Semaphore (N permits)  →  caps concurrent Docker containers
-        │
-        ▼
-DockerExecutorService (ProcessBuilder)
-        │  spawns container → executes code → captures stdout/stderr → enforces timeout
-        ▼
-Redis Pub/Sub  →  output:{sessionId}
-        │
-        ▼
-STOMP  →  back to client (live stdout/stderr + final exit payload)
-        │
-        ▼
-Container --rm'd · temp dir deleted · SessionRegistry entry cleared · permit released
+## 🔁 Execution Flow
+
+```mermaid
+flowchart TD
+    A[Client — WebSocket / STOMP] --> B["ExecutionController (@MessageMapping)"]
+    B --> C["Redis Queue — rce:jobs (FIFO, LPUSH / RPOP)"]
+    C --> D["Worker Pool (8 threads, @PostConstruct)"]
+    D -->|each worker blocks on semaphore.acquire| E["Semaphore (N permits)"]
+    E -->|caps concurrent Docker containers| F["DockerExecutorService (ProcessBuilder)"]
+    F -->|spawns container, runs code, captures stdout/stderr, enforces timeout| G["Redis Pub/Sub — output:{sessionId}"]
+    G --> H["STOMP → back to client (live output + exit payload)"]
+    H --> I["Cleanup: container --rm'd, temp dir deleted, SessionRegistry cleared, permit released"]
+```
 
 📊 Load Testing & Benchmarks
 
@@ -94,16 +82,19 @@ Key finding: container concurrency stayed flat at the permit count regardless of
 - npm install
 - npm run dev
 
-📂 Project Structure
-rce-engine/
-├── src/main/java/.../
-│   ├── controller/ExecutionController.java     # STOMP @MessageMapping entry point
-│   ├── service/DockerExecutorService.java       # ProcessBuilder + container lifecycle
-│   ├── service/SessionRegistry.java             # per-session process/listener tracking
-│   ├── worker/                                  # queue worker pool (@PostConstruct)
-│   └── model/RunRequest.java                    # sessionId, lang, code, inputString
-├── frontend/                                    # React (Vite) — CodeSubmit UI
-└── README.md
+## 📂 Project Structure
+
+- `rce-engine/`
+  - `src/main/java/.../`
+    - `controller/ExecutionController.java` — STOMP `@MessageMapping` entry point
+    - `service/DockerExecutorService.java` — ProcessBuilder + container lifecycle
+    - `service/SessionRegistry.java` — per-session process/listener tracking
+    - `worker/` — queue worker pool (`@PostConstruct`)
+    - `model/RunRequest.java` — `sessionId`, `lang`, `code`, `inputString`
+  - `frontend/` — React (Vite), CodeSubmit UI
+  - `README.md`
+
+---
 
 <div align="center">
 
