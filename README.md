@@ -81,7 +81,7 @@ Key finding: container concurrency stayed flat at the permit count regardless of
 # build & run backend
 - ./mvnw spring-boot:run
 
-# run frontend (repo: https://github.com/somewhereMaDan/rce/tree/main/client)
+ run frontend (repo: https://github.com/somewhereMaDan/rce/tree/main/client)
 - cd frontend
 - npm install
 - npm run dev
