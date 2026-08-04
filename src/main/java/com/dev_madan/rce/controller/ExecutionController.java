@@ -30,7 +30,7 @@ public class ExecutionController {
   private final ObjectMapper objMap;
   private final RedisTemplate<String, String> redisT;
   private static final String JOB_QUEUE = "rce:jobs";
-  private static final int HARD_SAFETY_LIMIT = 5000;
+  private static final int HARD_SAFETY_LIMIT = 10000;
 
   private final Map<String, String> springToClientSession = new ConcurrentHashMap<>();
 
@@ -51,6 +51,7 @@ public class ExecutionController {
   @MessageMapping("/run")
   public void handleRun(RunRequest request) {
     String sessionId = request.getSessionId();
+    sessionReg.clearCancelled(sessionId);
 
     MessageListener oldListener = sessionReg.removeListener(sessionId);
     if (oldListener != null) {
@@ -91,7 +92,7 @@ public class ExecutionController {
       redisT.opsForList().rightPush(JOB_QUEUE, json);
 
       long position = (jobsAhead == null ? 0 : jobsAhead) + 1;
-      sendStatus(sessionId, "queued",  "Queued — position: " + position);
+      sendStatus(sessionId, "queued", "Queued — position: " + position);
     } catch (Exception e) {
       System.err.println("Error while pushing the job into the queue: " + e.getMessage());
     }
@@ -107,6 +108,7 @@ public class ExecutionController {
     String clientSessionId = springToClientSession.remove(springSessionId);
 
     if (clientSessionId != null) {
+      sessionReg.markCancelled(clientSessionId);
       sessionReg.killIfExists(clientSessionId);
       MessageListener listener = sessionReg.removeListener(clientSessionId);
       if (listener != null) {

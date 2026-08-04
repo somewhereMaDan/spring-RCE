@@ -19,7 +19,8 @@ import lombok.RequiredArgsConstructor;
 
 public class WorkerService {
   private final RedisMessageListenerContainer redisMessageListenerContainer;
-  private final DockerExecutorService dockerExecService;
+    private final DockerExecutorService dockerExecService;
+//  private final CodeExecutor dockerExecService; used for k6 load testing
   private final RedisTemplate<String, String> redisT;
   private final ObjectMapper objMap;
   private final SessionRegistry sessionReg;
@@ -30,8 +31,8 @@ public class WorkerService {
 
   // "run this method automatically after Spring has finished creating and injecting all dependencies into this bean"
   @PostConstruct
-  public void startWorkers(){
-    for(int i = 0; i < WORKER_COUNT; i++){
+  public void startWorkers() {
+    for (int i = 0; i < WORKER_COUNT; i++) {
       int workerId = i;
 
       Thread thread = new Thread(() -> workerLoop(workerId));
@@ -42,16 +43,19 @@ public class WorkerService {
     }
   }
 
-  private void workerLoop(int workerId){
-    while (running){
-      try{
+  private void workerLoop(int workerId) {
+    while (running) {
+      try {
         String job = redisT.opsForList().leftPop(JOB_QUEUE, Duration.ofSeconds(2));
-        if(job == null) continue;
+        if (job == null) continue;
         // JSON string → RunRequest object
         RunRequest jobData = objMap.readValue(job, RunRequest.class);
 
-        // if users clicks run again
         sessionReg.killIfExists(jobData.getSessionId());
+
+        if(sessionReg.isCancelled(jobData.getSessionId())){
+          continue;
+        }
 
         Runnable listenerCleanup = () -> {
           MessageListener listener = sessionReg.removeListener(jobData.getSessionId());
@@ -67,7 +71,7 @@ public class WorkerService {
             jobData.getSessionId(),
             listenerCleanup
         );
-      }catch (Exception e){
+      } catch (Exception e) {
         if (!running) break;
 //        e.printStackTrace();
       }

@@ -14,17 +14,16 @@ import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
-
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.data.redis.listener.RedisMessageListenerContainer;
 import org.springframework.stereotype.Service;
-
+import org.springframework.context.annotation.Profile;
 import com.dev_madan.rce.controller.ExecutionController;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 @Service
-public class DockerExecutorService {
+public class DockerExecutorService implements CodeExecutor{
   @Value("${app.host-temp-path:}")
   private String hostTempPath;
 
@@ -42,6 +41,7 @@ public class DockerExecutorService {
     this.sessionReg = sessionReg;
     this.containerSlots = new Semaphore(maxConcurrent);
   }
+
 
   private Process executePython(String code, String inputString, String sessionId, Runnable listenerCleanup) {
     String jobId = UUID.randomUUID().toString();
