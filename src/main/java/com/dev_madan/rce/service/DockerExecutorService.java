@@ -11,7 +11,7 @@ import java.util.UUID;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
-import java.util.concurrent.Semaphore;
+// import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 import org.springframework.beans.factory.annotation.Value;
@@ -23,14 +23,14 @@ import com.dev_madan.rce.controller.ExecutionController;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 @Service
-public class DockerExecutorService implements CodeExecutor{
+public class DockerExecutorService implements CodeExecutor {
   @Value("${app.host-temp-path:}")
   private String hostTempPath;
 
   private final RedisTemplate<String, String> redisTemplate;
   private final ObjectMapper objectMapper;
   private final SessionRegistry sessionReg;
-  private final Semaphore containerSlots;
+  // private final Semaphore containerSlots;
 
   public DockerExecutorService(RedisTemplate<String, String> redisTemplate,
       ObjectMapper objectMapper, SessionRegistry sessionReg, ExecutionController exeController,
@@ -39,9 +39,8 @@ public class DockerExecutorService implements CodeExecutor{
     this.redisTemplate = redisTemplate;
     this.objectMapper = objectMapper;
     this.sessionReg = sessionReg;
-    this.containerSlots = new Semaphore(maxConcurrent);
+    // this.containerSlots = new Semaphore(maxConcurrent);
   }
-
 
   private Process executePython(String code, String inputString, String sessionId, Runnable listenerCleanup) {
     String jobId = UUID.randomUUID().toString();
@@ -56,9 +55,8 @@ public class DockerExecutorService implements CodeExecutor{
       Files.writeString(filepath, code);
     } catch (IOException e) {
       sendError(
-              sessionId,
-              "Failed to write code on file: " + filepath + " - " + e.getMessage()
-      );
+          sessionId,
+          "Failed to write code on file: " + filepath + " - " + e.getMessage());
       return null;
     }
 
@@ -90,9 +88,8 @@ public class DockerExecutorService implements CodeExecutor{
       Files.writeString(filePath, code);
     } catch (IOException e) {
       sendError(
-              sessionId,
-              "Failed to write code on file: " + filePath + " - " + e.getMessage()
-      );
+          sessionId,
+          "Failed to write code on file: " + filePath + " - " + e.getMessage());
       return null;
     }
 
@@ -120,14 +117,14 @@ public class DockerExecutorService implements CodeExecutor{
 
   private Process startProcess(List<String> cmd, String inputString, String sessionId, Runnable cleanup,
       Runnable listenerCleanup) {
-    try {
-      containerSlots.acquire();
-    } catch (InterruptedException e) {
-      Thread.currentThread().interrupt();
-      sendError(sessionId, "Interrupted while sending waiting for an execution slot");
-      cleanup.run();
-      return null;
-    }
+    // try {
+    //   containerSlots.acquire();
+    // } catch (InterruptedException e) {
+    //   Thread.currentThread().interrupt();
+    //   sendError(sessionId, "Interrupted while sending waiting for an execution slot");
+    //   cleanup.run();
+    //   return null;
+    // }
 
     Process child;
     try {
@@ -150,7 +147,7 @@ public class DockerExecutorService implements CodeExecutor{
     } catch (IOException e) {
       sendError(sessionId, "Failed to start Docker: " + e.getMessage());
       cleanup.run();
-      containerSlots.release();
+      // containerSlots.release();
       return null;
     }
 
@@ -198,38 +195,33 @@ public class DockerExecutorService implements CodeExecutor{
     stdoutThread.start();
     stderrThread.start();
 
-    Thread waitThread = new Thread(() -> {
-      try {
-        int exitCode = child.waitFor(); // blocks until exit
+    try {
+      int exitCode = child.waitFor(); // blocks until exit
 
-        stdoutThread.join();
-        stderrThread.join();
+      stdoutThread.join();
+      stderrThread.join();
 
-        checkCpuTime.cancel(false);
-        scheduler.shutdown();
+      Map<String, Object> exitPayload = Map.of("type", "exit", "code", exitCode, "cpuTime", cpuTime.get());
 
-        Map<String, Object> exitPayload = Map.of("type", "exit", "code", exitCode, "cpuTime", cpuTime.get());
+      String exitJson = objectMapper.writeValueAsString(exitPayload); // serialize to JSON string
 
-        String exitJson = objectMapper.writeValueAsString(exitPayload); // serialize to JSON string
+      redisTemplate.convertAndSend("output:" + sessionId, exitJson);
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
+    } catch (Exception e) {
+      System.err.println("Error while completion of Docker container: " + e.getMessage());
+    } finally {
+      checkCpuTime.cancel(false);
+      scheduler.shutdownNow();
+      cleanup.run();
+      
+      // Every execution adds an entry, nothing ever removes it.
+      // After thousands of executions the map holds thousands of dead Process references that's why
+      sessionReg.removeProcess(sessionId);
+      listenerCleanup.run();
 
-        redisTemplate.convertAndSend("output:" + sessionId, exitJson);
-      } catch (InterruptedException e) {
-        Thread.currentThread().interrupt();
-      } catch (Exception e) {
-        System.err.println("Error while completion of Docker container: " + e.getMessage());
-      }finally{
-        cleanup.run();
-        // Every execution adds an entry, nothing ever removes it.
-        // After thousands of executions the map holds thousands of dead Process
-        // references.
-        // that's why
-        sessionReg.removeProcess(sessionId);
-        listenerCleanup.run();
-        containerSlots.release();
-      }
-    });
-
-    waitThread.start();
+      // containerSlots.release(); We have removed the semaphore as thread can wait on it's own without us locking it.
+    }
     return child;
   }
 
