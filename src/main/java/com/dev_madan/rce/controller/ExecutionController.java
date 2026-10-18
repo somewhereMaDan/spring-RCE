@@ -19,9 +19,9 @@ import com.dev_madan.rce.dto.RunRequest;
 import com.dev_madan.rce.service.SessionRegistry;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
-import lombok.AllArgsConstructor;
+import lombok.RequiredArgsConstructor;
 
-@AllArgsConstructor
+@RequiredArgsConstructor 
 @Controller
 public class ExecutionController {
   private final SimpMessagingTemplate simpMessagingTemplate;
@@ -51,8 +51,8 @@ public class ExecutionController {
   @MessageMapping("/run")
   public void handleRun(RunRequest request) {
     String sessionId = request.getSessionId();
-    sessionReg.clearCancelled(sessionId);
 
+    sessionReg.clearCancelled(sessionId);
     MessageListener oldListener = sessionReg.removeListener(sessionId);
     if (oldListener != null) {
       redisMessageListenerContainer.removeMessageListener(oldListener);
@@ -72,7 +72,7 @@ public class ExecutionController {
     // "Hey Redis, I want to receive messages on channel output:abc123"
     redisMessageListenerContainer.addMessageListener(
         listener,
-        new ChannelTopic("output:" + sessionId));
+        new ChannelTopic("output:" + sessionId)); // Each session gets its own listener bound to its own channel
     sessionReg.registerListener(sessionId, listener);
 
     Long jobsAhead = redisT.opsForList().size(JOB_QUEUE);
