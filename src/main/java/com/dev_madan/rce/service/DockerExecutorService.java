@@ -55,7 +55,10 @@ public class DockerExecutorService implements CodeExecutor{
       Files.createDirectories(containerTempDir);
       Files.writeString(filepath, code);
     } catch (IOException e) {
-      sendError(sessionId, "Failed to write code on file: " + e.getMessage());
+      sendError(
+              sessionId,
+              "Failed to write code on file: " + filepath + " - " + e.getMessage()
+      );
       return null;
     }
 
@@ -86,14 +89,17 @@ public class DockerExecutorService implements CodeExecutor{
       Files.createDirectories(containerTempDir);
       Files.writeString(filePath, code);
     } catch (IOException e) {
-      sendError(sessionId, "Failed to write code on file: " + e.getMessage());
+      sendError(
+              sessionId,
+              "Failed to write code on file: " + filePath + " - " + e.getMessage()
+      );
       return null;
     }
 
     List<String> cmd = List.of("docker", "run", "--rm",
         "-i", "--memory=128m", "--cpus=0.25", "--network", "none",
         "-v", String.format("%s:/code", containerTempDir.toString()), "java-runner", "sh", "-c",
-        String.format("javac /code/%s && java -cp /code Main", filename));
+        String.format("javac -d /tmp/java-out /code/%s && java -cp /tmp/java-out Main", filename));
 
     return startProcess(cmd, inputString, sessionId, () -> {
       deleteDir(containerTempDir.toString());
