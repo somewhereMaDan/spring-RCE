@@ -19,9 +19,6 @@ import lombok.RequiredArgsConstructor;
 @Service
 public class WorkerService implements SmartLifecycle {
   private final DockerExecutorService dockerExecutorService;
-
-  private final RedisMessageListenerContainer redisMessageListenerContainer;
-
   // private final DockerExecutorService dockerExecService;
   // private final CodeExecutor dockerExecService; used for k6 load testing
   private final RedisTemplate<String, String> redisT;
@@ -58,8 +55,7 @@ public class WorkerService implements SmartLifecycle {
   private void workerLoop(int workerId) {
     while (running && !shuttingDown) {
       try {
-        String job = redisT.opsForList()
-            .leftPop(JOB_QUEUE, Duration.ofSeconds(2));
+        String job = redisT.opsForList().leftPop(JOB_QUEUE, Duration.ofSeconds(2));
 
         if (job == null) {
           continue;
@@ -80,19 +76,7 @@ public class WorkerService implements SmartLifecycle {
           continue;
         }
 
-        Runnable listenerCleanup = () -> {
-          MessageListener listener = sessionReg.removeListener(jobData.getSessionId());
-
-          if (listener != null) {
-            redisMessageListenerContainer
-                .removeMessageListener(listener);
-          }
-        };
-
-        System.out.printf(
-            "[%s] Worker-%d START session=%s%n",
-            java.time.LocalTime.now(),
-            workerId,
+        System.out.printf("[%s] Worker-%d START session=%s%n", java.time.LocalTime.now(), workerId,
             jobData.getSessionId());
 
         // Blocks until execution completes (or is killed at the 10s limit).
@@ -101,7 +85,7 @@ public class WorkerService implements SmartLifecycle {
             jobData.getCode(),
             jobData.getInputString(),
             jobData.getSessionId(),
-            listenerCleanup);
+            jobData.getRunId());
 
         System.out.printf(
             "[%s] Worker-%d FINISHED session=%s%n",
@@ -114,10 +98,7 @@ public class WorkerService implements SmartLifecycle {
           break;
         }
 
-        System.err.printf(
-            "Worker-%d error: %s%n",
-            workerId,
-            e.getMessage());
+        System.err.printf("Worker-%d error: %s%n", workerId, e.getMessage());
       }
     }
     System.out.println("Worker-" + workerId + " stopped.");

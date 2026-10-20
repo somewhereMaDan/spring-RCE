@@ -1,0 +1,77 @@
+runId filter to test how execution stops and how stale data is dropped but user clicks on the run again and but event getting consumed to increment the offset but not sending the data back to the client.
+
+now:
+
+The key (sessionId) - "abc", it is used to pick partition we had 3 and we also use it to send the output back to specific client.
+
+runId = "A", just a label we use it run return so that stale data from previous run doesn't reach the client.
+
+value (the payload) = {}
+
+-----------------------------
+***Step 1: Run A is streaming
+
+sessionRegistry: currentRun[sessionId is abc]: run 'A'
+
+record arrving at consumer:
+key:abc
+header: rundId -> run 'A'
+value: type: "stdout"
+
+(✓) the if-check passes as runId (A) equals currentRun (A)
+so convertAndSend("/topic/output/abc", value) runs and the browser gets it.
+
+-----------------------------
+***Step 2: User clicks on Run again and Late chunk from run A:
+
+handleRun() generates runId "B", calls setCurrentRun(sessionId is abc, B), then killifExists(abc). Container A dies, but worker A may still publish some buffered chucks/output.
+
+sessionRegistry: currentRun[sessionId is still 'abc' as user is same] = run 'B'
+from this moment every record tagged run 'A' is stale.
+
+now, record arriving at consumer:
+key: abc
+header: runId -> run 'B'
+value: type: "stdout"
+
+(✗) return runs, because runId (A) != currentRun (B)
+so the stale data is never reaching the client, we still consume the event and the offset still moves on and record stays in kafka.
+
+------------------------------
+***Step 3: Run 'B' starts
+
+sessionRegistry: currentRun[sessionId is abc]: run 'B'
+
+record arrving at consumer
+key:abc
+header: rundId -> run 'B'
+value: type: "stdout"
+
+(✓) the if-check passes as runId (B) equals currentRun (B)
+
+---------------------------------
+***Step 4: exit from killed run A
+
+sessionRegistry: currentRun[sessionId is abc]: run 'B'
+
+record arrving at consumer
+key:abc
+header: rundId -> run 'A'
+value: type: "exit 137"
+
+(✗) return runs, because runId (A) != currentRun (B), it ignores it again.
+
+---------------------------------
+***Step 5: run B finishes
+
+sessionRegistry: currentRun[sessionId is abc]: run 'B'
+
+record arrving at consumer
+key:abc
+header: rundId -> run 'B'
+value: type: "exit 0"
+
+(✓) the if-check passes as runId (B) equals currentRun (B)
+so convertAndSend("/topic/output/abc", value) runs and the browser gets it.
+
+The new-run flow -> handleRun stores the new runId in currentRun before the job is queued. The worker stamps that same runId into the header of every record it publishes. So run B's records match currentRun and pass. The old run's records, whether already sitting in Kafka or still being published by worker A, carry the old runId and are dropped.

@@ -1,0 +1,5 @@
+give the ablity to stop the execution or press the run button that should trigger to stop the current execution and drop the stale data from producer that should be dropped as we used runId
+
+do runId filter test, which is the part Kafka doesn't handle for you. 
+Run an infinite loop, click Run again immediately, and check that none of the old run's output or its exit (code 137) reaches the UI. 
+Then close the tab mid-run and confirm nothing is forwarded after the disconnect.

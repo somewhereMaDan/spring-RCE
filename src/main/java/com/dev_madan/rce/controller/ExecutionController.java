@@ -1,13 +1,11 @@
 package com.dev_madan.rce.controller;
 
 import java.util.Map;
+import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
 import org.springframework.context.event.EventListener;
-import org.springframework.data.redis.connection.MessageListener;
 import org.springframework.data.redis.core.RedisTemplate;
-import org.springframework.data.redis.listener.ChannelTopic;
-import org.springframework.data.redis.listener.RedisMessageListenerContainer;
 import org.springframework.messaging.handler.annotation.MessageMapping;
 import org.springframework.messaging.simp.SimpMessagingTemplate;
 import org.springframework.messaging.simp.stomp.StompHeaderAccessor;
@@ -25,7 +23,6 @@ import lombok.RequiredArgsConstructor;
 @Controller
 public class ExecutionController {
   private final SimpMessagingTemplate simpMessagingTemplate;
-  private final RedisMessageListenerContainer redisMessageListenerContainer;
   private final SessionRegistry sessionReg;
   private final ObjectMapper objMap;
   private final RedisTemplate<String, String> redisT;
@@ -37,8 +34,6 @@ public class ExecutionController {
   @EventListener
   public void handleConnect(SessionConnectEvent event) {
     StompHeaderAccessor accessor = StompHeaderAccessor.wrap(event.getMessage());
-    // StompHeaderAccessor is a Spring class used to read and modify STOMP message
-    // headers in WebSocket messaging.
 
     String springSessionId = accessor.getSessionId();
     String clientSessionId = accessor.getFirstNativeHeader("sessionId");
@@ -51,42 +46,21 @@ public class ExecutionController {
   @MessageMapping("/run")
   public void handleRun(RunRequest request) {
     String sessionId = request.getSessionId();
+    String runId = UUID.randomUUID().toString();
+    request.setRunId(runId);
+    sessionReg.setCurrentRun(sessionId, runId);
 
     sessionReg.clearCancelled(sessionId);
-    MessageListener oldListener = sessionReg.removeListener(sessionId);
-    if (oldListener != null) {
-      redisMessageListenerContainer.removeMessageListener(oldListener);
-    }
     // Kill existing process if user clicks on run again
     sessionReg.killIfExists(sessionId);
-
-    MessageListener listener = ((message, pattern) -> {
-      String payload = new String(message.getBody());
-      simpMessagingTemplate.convertAndSend(
-          "/topic/output/" + sessionId,
-          (Object) payload);
-    });
-
-    // I want to receive any message published to this channel. You become a
-    // subscriber.
-    // "Hey Redis, I want to receive messages on channel output:abc123"
-    redisMessageListenerContainer.addMessageListener(
-        listener,
-        new ChannelTopic("output:" + sessionId)); // Each session gets its own listener bound to its own channel
-    sessionReg.registerListener(sessionId, listener);
 
     Long jobsAhead = redisT.opsForList().size(JOB_QUEUE);
 
     if (jobsAhead != null && jobsAhead > HARD_SAFETY_LIMIT) {
-      // rejects immediately, system at capacity
-      MessageListener leaked = sessionReg.removeListener(sessionId);
-      if (leaked != null)
-        redisMessageListenerContainer.removeMessageListener(leaked);
       sendStatus(sessionId, "error", "System is overloaded. Please try again shortly.");
       return;
     }
 
-    // push job to queue after subscribing so we don't lose any chunks
     try {
       String json = objMap.writeValueAsString(request);
       redisT.opsForList().rightPush(JOB_QUEUE, json);
@@ -110,10 +84,6 @@ public class ExecutionController {
     if (clientSessionId != null) {
       sessionReg.markCancelled(clientSessionId);
       sessionReg.killIfExists(clientSessionId);
-      MessageListener listener = sessionReg.removeListener(clientSessionId);
-      if (listener != null) {
-        redisMessageListenerContainer.removeMessageListener(listener);
-      }
     }
   }
 }
