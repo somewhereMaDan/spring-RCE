@@ -5,9 +5,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 import org.springframework.context.SmartLifecycle;
-import org.springframework.data.redis.connection.MessageListener;
 import org.springframework.data.redis.core.RedisTemplate;
-import org.springframework.data.redis.listener.RedisMessageListenerContainer;
 import org.springframework.stereotype.Service;
 
 import com.dev_madan.rce.dto.RunRequest;
@@ -19,14 +17,12 @@ import lombok.RequiredArgsConstructor;
 @Service
 public class WorkerService implements SmartLifecycle {
   private final DockerExecutorService dockerExecutorService;
-  // private final DockerExecutorService dockerExecService;
-  // private final CodeExecutor dockerExecService; used for k6 load testing
   private final RedisTemplate<String, String> redisT;
   private final ObjectMapper objMap;
   private final SessionRegistry sessionReg;
 
   private static final String JOB_QUEUE = "rce:jobs";
-  private static final int WORKER_COUNT = 2;
+  private static final int WORKER_COUNT = 6;
 
   // Executions are killed after 10s, so a running job always ends within ~10s.
   // 3s buffer for publishing final output/exit event and listener cleanup.
