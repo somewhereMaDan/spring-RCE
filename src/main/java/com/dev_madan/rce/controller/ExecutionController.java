@@ -1,89 +1,70 @@
 package com.dev_madan.rce.controller;
 
+import java.time.Duration;
 import java.util.Map;
 import java.util.UUID;
-import java.util.concurrent.ConcurrentHashMap;
 
-import org.springframework.context.event.EventListener;
-import org.springframework.data.redis.core.RedisTemplate;
-import org.springframework.messaging.handler.annotation.MessageMapping;
-import org.springframework.messaging.simp.SimpMessagingTemplate;
-import org.springframework.messaging.simp.stomp.StompHeaderAccessor;
-import org.springframework.stereotype.Controller;
-import org.springframework.web.socket.messaging.SessionConnectEvent;
-import org.springframework.web.socket.messaging.SessionDisconnectEvent;
+import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.DeleteMapping;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RestController;
 
 import com.dev_madan.rce.dto.RunRequest;
-import com.dev_madan.rce.service.SessionRegistry;
 import com.fasterxml.jackson.databind.ObjectMapper;
-
 import lombok.RequiredArgsConstructor;
 
-@RequiredArgsConstructor 
-@Controller
+@RestController
+@RequestMapping("/runs")
+@RequiredArgsConstructor
 public class ExecutionController {
-  private final SimpMessagingTemplate simpMessagingTemplate;
-  private final SessionRegistry sessionReg;
-  private final ObjectMapper objMap;
-  private final RedisTemplate<String, String> redisT;
-  private static final String JOB_QUEUE = "rce:jobs";
-  private static final int HARD_SAFETY_LIMIT = 10000;
+    private final StringRedisTemplate redis;
+    private final ObjectMapper om;
 
-  private final Map<String, String> springToClientSession = new ConcurrentHashMap<>();
+    @PostMapping
+    public ResponseEntity<Map<String, String>> submit(
+            @RequestBody RunRequest req) throws Exception {
 
-  @EventListener
-  public void handleConnect(SessionConnectEvent event) {
-    StompHeaderAccessor accessor = StompHeaderAccessor.wrap(event.getMessage());
+        String jobId = UUID.randomUUID().toString();
+        req.setJobId(jobId);
 
-    String springSessionId = accessor.getSessionId();
-    String clientSessionId = accessor.getFirstNativeHeader("sessionId");
+        redis.opsForHash().putAll(
+                "run:" + jobId,
+                Map.of(
+                        "status", "QUEUED",
+                        "createdAt",
+                        String.valueOf(System.currentTimeMillis())));
 
-    if (clientSessionId != null) {
-      springToClientSession.put(springSessionId, clientSessionId);
-    }
-  }
+        redis.expire("run:" + jobId, Duration.ofHours(1));
 
-  @MessageMapping("/run")
-  public void handleRun(RunRequest request) {
-    String sessionId = request.getSessionId();
-    String runId = UUID.randomUUID().toString();
-    request.setRunId(runId);
-    sessionReg.setCurrentRun(sessionId, runId);
+        redis.opsForList().rightPush(
+                "rce:jobs",
+                om.writeValueAsString(req));
 
-    sessionReg.clearCancelled(sessionId);
-    // Kill existing process if user clicks on run again
-    sessionReg.killIfExists(sessionId);
-
-    Long jobsAhead = redisT.opsForList().size(JOB_QUEUE);
-
-    if (jobsAhead != null && jobsAhead > HARD_SAFETY_LIMIT) {
-      sendStatus(sessionId, "error", "System is overloaded. Please try again shortly.");
-      return;
+        return ResponseEntity.accepted().body(Map.of("jobId", jobId));
     }
 
-    try {
-      String json = objMap.writeValueAsString(request);
-      redisT.opsForList().rightPush(JOB_QUEUE, json);
+    @GetMapping("/{jobId}")
+    public ResponseEntity<Map<Object, Object>> get(
+            @PathVariable String jobId) {
 
-      long position = (jobsAhead == null ? 0 : jobsAhead) + 1;
-      sendStatus(sessionId, "queued", "Queued — position: " + position);
-    } catch (Exception e) {
-      System.err.println("Error while pushing the job into the queue: " + e.getMessage());
+        Map<Object, Object> result = redis.opsForHash().entries("run:" + jobId);
+
+        return result.isEmpty()
+                ? ResponseEntity.notFound().build()
+                : ResponseEntity.ok(result);
     }
-  }
 
-  private void sendStatus(String sessionId, String type, String message) {
-    simpMessagingTemplate.convertAndSend("/topic/output/" + sessionId, (Object) Map.of("type", type, "data", message));
-  }
-
-  @EventListener
-  public void handleDisconnect(SessionDisconnectEvent event) {
-    String springSessionId = event.getSessionId();
-    String clientSessionId = springToClientSession.remove(springSessionId);
-
-    if (clientSessionId != null) {
-      sessionReg.markCancelled(clientSessionId);
-      sessionReg.killIfExists(clientSessionId);
+    @DeleteMapping("/{jobId}")
+    public ResponseEntity<Void> cancel(@PathVariable String jobId) {
+        String key = "run:" + jobId;
+        if (Boolean.TRUE.equals(redis.hasKey(key))) {
+            redis.opsForHash().put(key, "cancelRequested", "true");
+        }
+        return ResponseEntity.accepted().build();
     }
-  }
 }

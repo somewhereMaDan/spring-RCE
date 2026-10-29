@@ -1,29 +1,18 @@
 package com.dev_madan.rce.dto;
 
-import lombok.Data;
-
 // generates getters, setters, equals, hashCode, toString
 public class RunRequest {
-    private String sessionId;
+    private String jobId;
     private String lang; // "python" | "java" | "cpp"
     private String code;
     private String inputString;
-    private String runId;
 
-    public String getRunId() {
-        return runId;
+    public String getJobId() {
+        return jobId;
     }
 
-    public void setRunId(String runId) {
-        this.runId = runId;
-    }
-
-    public String getSessionId() {
-        return sessionId;
-    }
-
-    public void setSessionId(String sessionId) {
-        this.sessionId = sessionId;
+    public void setJobId(String jobId) {
+        this.jobId = jobId;
     }
 
     public String getLang() {

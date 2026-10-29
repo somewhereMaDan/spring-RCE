@@ -5,7 +5,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 import org.springframework.context.SmartLifecycle;
-import org.springframework.data.redis.core.RedisTemplate;
+import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 
 import com.dev_madan.rce.dto.RunRequest;
@@ -17,9 +17,10 @@ import lombok.RequiredArgsConstructor;
 @Service
 public class WorkerService implements SmartLifecycle {
   private final DockerExecutorService dockerExecutorService;
-  private final RedisTemplate<String, String> redisT;
   private final ObjectMapper objMap;
   private final SessionRegistry sessionReg;
+
+  private final StringRedisTemplate redis;
 
   private static final String JOB_QUEUE = "rce:jobs";
   private static final int WORKER_COUNT = 6;
@@ -51,7 +52,7 @@ public class WorkerService implements SmartLifecycle {
   private void workerLoop(int workerId) {
     while (running && !shuttingDown) {
       try {
-        String job = redisT.opsForList().leftPop(JOB_QUEUE, Duration.ofSeconds(2));
+        String job = redis.opsForList().leftPop(JOB_QUEUE, Duration.ofSeconds(2));
 
         if (job == null) {
           continue;
@@ -60,34 +61,36 @@ public class WorkerService implements SmartLifecycle {
         // Shutdown may have started while leftPop was waiting.
         // Put the fetched job back and exit instead of starting it.
         if (shuttingDown) {
-          redisT.opsForList().leftPush(JOB_QUEUE, job);
+          redis.opsForList().leftPush(JOB_QUEUE, job);
           break;
         }
 
         RunRequest jobData = objMap.readValue(job, RunRequest.class);
 
-        sessionReg.killIfExists(jobData.getSessionId());
+        System.out.println(objMap.writerWithDefaultPrettyPrinter()
+            .writeValueAsString(jobData));
 
-        if (sessionReg.isCancelled(jobData.getSessionId())) {
+        sessionReg.killIfExists(jobData.getJobId());
+
+        if (sessionReg.isCancelled(jobData.getJobId())) {
           continue;
         }
 
         System.out.printf("[%s] Worker-%d START session=%s%n", java.time.LocalTime.now(), workerId,
-            jobData.getSessionId());
+            jobData.getJobId());
 
         // Blocks until execution completes (or is killed at the 10s limit).
         dockerExecutorService.execute(
             jobData.getLang(),
             jobData.getCode(),
             jobData.getInputString(),
-            jobData.getSessionId(),
-            jobData.getRunId());
+            jobData.getJobId());
 
         System.out.printf(
             "[%s] Worker-%d FINISHED session=%s%n",
             java.time.LocalTime.now(),
             workerId,
-            jobData.getSessionId());
+            jobData.getJobId());
 
       } catch (Exception e) {
         if (shuttingDown || !running) {

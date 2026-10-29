@@ -1,100 +1,75 @@
 package com.dev_madan.rce.service;
 
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Duration;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
-import java.util.concurrent.ScheduledFuture;
-// import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 
-import org.apache.kafka.clients.producer.ProducerRecord;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.data.redis.core.RedisTemplate;
-import org.springframework.kafka.core.KafkaTemplate;
+import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
-import com.dev_madan.rce.controller.ExecutionController;
-import com.fasterxml.jackson.databind.ObjectMapper;
+
+import reactor.core.publisher.Sinks.One;
 
 @Service
 public class DockerExecutorService {
     @Value("${app.host-temp-path:}")
     private String hostTempPath;
 
-    private final RedisTemplate<String, String> redisTemplate;
-    private final ObjectMapper objectMapper;
-    private final SessionRegistry sessionReg;
+    private final StringRedisTemplate redis;
 
-    private final KafkaTemplate<String, String> kafkaTemplate;
-    // private final Semaphore containerSlots;
+    private static final int MAX_OUTPUT = 64 * 1024;
+    private static final long TIME_LIMIT_MS = 10_000;
 
-    public DockerExecutorService(RedisTemplate<String, String> redisTemplate,
-            ObjectMapper objectMapper, SessionRegistry sessionReg, ExecutionController exeController,
-            KafkaTemplate<String, String> kafkaTemplate) {
-
-        this.redisTemplate = redisTemplate;
-        this.objectMapper = objectMapper;
-        this.sessionReg = sessionReg;
-        this.kafkaTemplate = kafkaTemplate;
+    public DockerExecutorService(StringRedisTemplate redisTemplate) {
+        this.redis = redisTemplate;
     }
 
-    public Process execute(String lang, String code, String inputString, String sessionId, String runId) {
-        return switch (lang) {
-            case "python" -> executePython(code, inputString, sessionId, runId);
-            case "java" -> executeJava(code, inputString, sessionId, runId);
-            // case "cpp" -> executeCpp(code, sessionId);
-            default -> {
-                sendError(sessionId, runId, "Unsupported language: " + lang);
-                yield null;
-            }
-        };
+    public void execute(String lang, String code, String inputString, String jobId) {
+        switch (lang) {
+            case "python" -> executePython(code, inputString, jobId);
+            case "java" -> executeJava(code, inputString, jobId);
+            default -> throw new IllegalArgumentException(
+                    "Unsupported language: " + lang);
+        }
     }
 
-    private Process executePython(String code, String inputString, String sessionId, String runId) {
-        String jobId = UUID.randomUUID().toString();
-        String filename = jobId + ".py";
-        Path containerTempDir = Path.of(hostTempPath.isBlank() ? "/app/temp" : hostTempPath);
-        Path filepath = containerTempDir.resolve(filename);
-        String hostTempDir = hostTempPath.isBlank() ? containerTempDir.toString().replace("\\", "/")
-                : hostTempPath.replace("\\", "/");
-
+    private void executePython(String code, String inputString, String jobId) {
+        Path dir = Path.of(hostTempPath.isBlank() ? "/app/temp" : hostTempPath, jobId);
         try {
-            Files.createDirectories(containerTempDir);
-            Files.writeString(filepath, code);
+            Files.createDirectories(dir);
+            Files.writeString(dir.resolve("main.py"), code);
         } catch (IOException e) {
-            sendError(
-                    sessionId,
-                    runId,
-                    "Failed to write code on file: " + filepath + " - " + e.getMessage());
-            return null;
+            finish(jobId, "ERROR", "INTERNAL", "Failed to write code: " + e.getMessage());
+            return;
         }
 
-        // we never close the input stream
-        List<String> cmd = List.of("docker", "run", "--rm",
+        List<String> cmd = List.of("docker", "run", "--rm", "--name", "rce-" + jobId,
                 "-i", "--memory=128m", "--cpus=0.25", "--network", "none",
-                "-v", String.format("%s:/code", hostTempDir),
-                "python-runner", "python", "-u", String.format("/code/%s", filename));
+                "-v", dir.toString().replace("\\", "/") + ":/code:ro",
+                "python-runner", "python", "-u", "/code/main.py");
 
-        return startProcess(cmd, inputString, sessionId, () -> {
-            try {
-                Files.deleteIfExists(filepath);
-            } catch (IOException ignored) {
-            }
-        }, runId);
+        startProcess(cmd, inputString, jobId, () -> deleteDir(dir.toString()));
     }
 
-    private Process executeJava(String code, String inputString, String sessionId, String runId) {
-        String jobId = UUID.randomUUID().toString();
+    private void executeJava(String code, String inputString, String jobId) {
+        String runId_for_file = UUID.randomUUID().toString();
         String filename = "Main.java";
-        Path containerTempDir = Path.of(hostTempPath.isBlank() ? "/app/temp" : hostTempPath, jobId);
+        Path containerTempDir = Path.of(hostTempPath.isBlank() ? "/app/temp" : hostTempPath, runId_for_file);
         Path filePath = containerTempDir.resolve(filename);
 
         System.out.println("containerTempDir: " + containerTempDir);
@@ -104,11 +79,10 @@ public class DockerExecutorService {
             Files.createDirectories(containerTempDir);
             Files.writeString(filePath, code);
         } catch (IOException e) {
-            sendError(
-                    sessionId,
-                    runId,
-                    "Failed to write code on file: " + filePath + " - " + e.getMessage());
-            return null;
+            // sendError(
+            // jobId,
+            // "Failed to write code on file: " + filePath + " - " + e.getMessage());
+            // return null;
         }
 
         List<String> cmd = List.of("docker", "run", "--rm",
@@ -116,126 +90,114 @@ public class DockerExecutorService {
                 "-v", String.format("%s:/code", containerTempDir.toString()), "java-runner", "sh", "-c",
                 String.format("javac -d /tmp/java-out /code/%s && java -cp /tmp/java-out Main", filename));
 
-        return startProcess(cmd, inputString, sessionId, () -> {
+        startProcess(cmd, inputString, jobId, () -> {
             deleteDir(containerTempDir.toString());
-        }, runId);
+        });
     }
 
-    private Process startProcess(List<String> cmd, String inputString, String sessionId, Runnable cleanup,
-            String runId) {
+    private void startProcess(List<String> cmd, String inputString, String jobId, Runnable cleanup) {
+        String key = "run:" + jobId;
+        long start = System.currentTimeMillis();
 
-        Process child;
-        try {
-            child = new ProcessBuilder(cmd).redirectErrorStream(false).start();
+        AtomicBoolean timedOut = new AtomicBoolean(false);
+        AtomicBoolean cancelled = new AtomicBoolean(false);
 
-            // register immediately after spawning — before threads start
-            sessionReg.register(sessionId, child);
-            send(sessionId, runId, "status", "now running...");
-            // This way the process is registered the moment Docker spawns — not after
-            // execution finishes.
-            // If disconnect fires during execution, killIfExists finds the process and
-            // destroys it.
+        ScheduledExecutorService schedular = Executors.newSingleThreadScheduledExecutor(); // schedular is started in separate thread and all stdout, stderr threads use 
+        // this schedular shared thread, this stdout, stderr does not have to maintain seprate thread everytime. 
 
-            if (inputString != null && !inputString.isBlank()) {
-                String normalized = inputString.endsWith("\n") ? inputString : inputString + "\n";
-                child.getOutputStream().write(normalized.getBytes());
-                child.getOutputStream().flush();
-                child.getOutputStream().close();
-            }
-        } catch (IOException e) {
-            sendError(sessionId, runId, "Failed to start Docker: " + e.getMessage());
-            cleanup.run();
-            return null;
-        }
+        // One subtle trade-off A single scheduler thread executes watchdog checks sequentially. 
+        // If one check blocks—for example, killContainer(jobId) takes a long time—other jobs' checks may be delayed.
 
-        ScheduledExecutorService scheduler = Executors.newScheduledThreadPool(1);
-
-        AtomicLong cpuTime = new AtomicLong(0);
-        AtomicLong cpuStart = new AtomicLong(System.currentTimeMillis());
-
-        ScheduledFuture<?> checkCpuTime = scheduler.scheduleAtFixedRate(() -> {
-            System.out.println("cpuTime: " + cpuTime);
-            cpuTime.addAndGet(System.currentTimeMillis() - cpuStart.get());
-            cpuStart.set(System.currentTimeMillis());
-            if (cpuTime.get() >= 10000) {
-                child.destroyForcibly();
-                sendError(sessionId, runId, "CPU Time Limit Exceeded");
-            }
-        }, 500, 500, TimeUnit.MILLISECONDS);
-
-        Thread stdoutThread = new Thread(() -> {
-            try (InputStream stdout = child.getInputStream()) {
-                byte[] buf = new byte[1024];
-                int n;
-
-                while ((n = stdout.read(buf)) != -1) {
-                    String chunk = new String(buf, 0, n);
-                    send(sessionId, runId, "stdout", chunk);
-                }
-            } catch (IOException ignored) {
-            }
-        });
-
-        Thread stderrThread = new Thread(() -> {
-            try (InputStream stderr = child.getErrorStream()) {
-                byte[] buf = new byte[1024];
-                int n;
-
-                while ((n = stderr.read(buf)) != -1) {
-                    String chunk = new String(buf, 0, n);
-                    send(sessionId, runId, "stderr", chunk);
-                }
-            } catch (IOException ignored) {
-            }
-        });
-
-        stdoutThread.start();
-        stderrThread.start();
+        Process child = null;
 
         try {
-            int exitCode = child.waitFor(); // blocks until exit
+            child = new ProcessBuilder(cmd).start();
 
-            stdoutThread.join();
-            stderrThread.join();
+            final Process p = child;
+            AtomicLong killedAt = new AtomicLong(0);
 
-            Map<String, Object> exitPayload = Map.of("type", "exit", "code", exitCode, "cpuTime", cpuTime.get());
+            redis.opsForHash().putAll(key, Map.of("status", "RUNNING", "startedAt", String.valueOf(start)));
 
-            String exitJson = objectMapper.writeValueAsString(exitPayload); // serialize to JSON string
+            schedular.scheduleAtFixedRate(() -> {
+                try {
+                    if (timedOut.get() || cancelled.get()) {
+                        // if the docker run CLI process is still alive after killing container, we'll destroyForcibly()
+                        if (p.isAlive() && System.currentTimeMillis() - killedAt.get() > 2000) {
+                            p.destroyForcibly(); // last resort: kills the CLI, unblocks waitFor
+                            return;
+                        }
+                    }
+                    if (System.currentTimeMillis() - start >= TIME_LIMIT_MS) {
+                        timedOut.set(true);
+                        killedAt.set(System.currentTimeMillis());
+                        killContainer(jobId);
+                    } else if (redis.opsForHash().hasKey(key, "cancelRequested")) {
+                        cancelled.set(true);
+                        killedAt.set(System.currentTimeMillis());
+                        killContainer(jobId);
+                    }
+                } catch (Exception ignored) {
+                    // TODO: handle exception
+                }
+            }, 500, 500, TimeUnit.MILLISECONDS);
 
-            // redisTemplate.convertAndSend("output:" + sessionId, exitJson);
-            ProducerRecord<String, String> record = new ProducerRecord<String,String>("execution-output", sessionId, exitJson);
-            record.headers().add("runId", runId.getBytes(StandardCharsets.UTF_8));
+            // we will discard the bytes after the limit, that covers the edge case ->
+            // output consuming too much memory (miilion lines)
+            CappedBuffer out = new CappedBuffer(MAX_OUTPUT);
+            CappedBuffer err = new CappedBuffer(MAX_OUTPUT);
 
-            kafkaTemplate.send(record);
+            Thread tOut = drain(child.getInputStream(), out);
+            Thread tErr = drain(child.getErrorStream(), err);
+
+            writeInput(child, inputString);
+
+            int exitCode = child.waitFor();
+            tOut.join();
+            tErr.join();
+
+            Map<String, String> res = new HashMap<>();
+            res.put("stdout", out.text());
+            res.put("stderr", err.text());
+            res.put("truncated", String.valueOf(out.truncated() || err.truncated()));
+            res.put("exitCode", String.valueOf(exitCode));
+            res.put("wallMs", String.valueOf(System.currentTimeMillis() - start));
+            res.put("finishedAt", String.valueOf(System.currentTimeMillis()));
+
+            if (cancelled.get()) {
+                res.put("status", "CANCELLED");
+            } else {
+                res.put("status", "DONE");
+                res.put("verdict", timedOut.get() ? "TLE" : exitCode == 0 ? "OK" : exitCode == 137 ? "MLE" : "RE");
+            }
+            redis.opsForHash().putAll(key, res);
+            redis.expire(key, Duration.ofHours(1));
+
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
+            finish(jobId, "ERROR", "INTERNAL", "Interrupted");
         } catch (Exception e) {
-            System.err.println("Error while completion of Docker container: " + e.getMessage());
+            finish(jobId, "ERROR", "INTERNAL", String.valueOf(e.getMessage()));
         } finally {
-            checkCpuTime.cancel(false);
-            scheduler.shutdownNow();
+            schedular.shutdownNow();
+            if (child != null && child.isAlive())
+                killContainer(jobId);
             cleanup.run();
-            sessionReg.removeProcess(sessionId);
         }
-        return child;
     }
 
-    private void send(String sessionId, String runId, String type, String data) {
+    private void finish(String jobId, String status, String verdict, String stderr) {
+        redis.opsForHash().putAll("run:" + jobId, Map.of(
+                "status", status, "verdict", verdict, "stderr", stderr,
+                "finishedAt", String.valueOf(System.currentTimeMillis())));
+    }
+
+    private void killContainer(String jobId) {
         try {
-            String payload = objectMapper.writeValueAsString(Map.of("type", type, "data", data));
-
-            ProducerRecord<String, String> record = new ProducerRecord<>("execution-output", sessionId, payload);
-            record.headers().add("runId", runId.getBytes(StandardCharsets.UTF_8));
-
-            kafkaTemplate.send(record);
-
-        } catch (Exception e) {
-            System.err.println("Failed to publish output: " + e.getMessage());
+            new ProcessBuilder("docker", "rm", "-f", "rce-" + jobId)
+                    .redirectOutput(ProcessBuilder.Redirect.DISCARD)
+                    .redirectErrorStream(true).start().waitFor(5, TimeUnit.SECONDS);
+        } catch (Exception ignored) {
         }
-    }
-
-    private void sendError(String sessionId, String runId, String message) {
-        send(sessionId, runId, "stderr", message);
     }
 
     private void deleteDir(String dirPath) {
@@ -251,6 +213,62 @@ public class DockerExecutorService {
                         }
                     });
         } catch (IOException ignored) {
+        }
+    }
+
+    // writing the input bytes to the outputStream of the process
+    private void writeInput(Process p, String input) {
+        new Thread(() -> {
+            try (OutputStream os = p.getOutputStream()) {
+                if (input != null && !input.isBlank()) {
+                    String s = input.endsWith("\n") ? input : input + "\n";
+                    os.write(s.getBytes(StandardCharsets.UTF_8));
+                }
+            } catch (IOException ignored) { // the program may exit without reading all input
+            }
+        }).start();
+    }
+
+    // for reading the stream and storing withing the capped buffer limit
+    private Thread drain(InputStream in, CappedBuffer buf) {
+        Thread t = new Thread(() -> {
+            try (in) {
+                byte[] b = new byte[4096];
+                int n;
+                while ((n = in.read(b)) != -1) // read available bytes into the array 'b', until the stream reaches it's
+                                               // end
+                    buf.write(b, n);
+            } catch (IOException ignored) {
+            }
+        });
+        t.start();
+        return t;
+    }
+
+    // enforcing limit
+    static class CappedBuffer {
+        private final ByteArrayOutputStream bos = new ByteArrayOutputStream();
+        private final int max;
+        private boolean truncated;
+
+        CappedBuffer(int max) {
+            this.max = max;
+        }
+
+        synchronized void write(byte[] b, int n) {
+            int room = max - bos.size();
+            if (room > 0)
+                bos.write(b, 0, Math.min(room, n));
+            if (n > room)
+                truncated = true;
+        }
+
+        synchronized String text() {
+            return bos.toString(StandardCharsets.UTF_8);
+        }
+
+        synchronized boolean truncated() {
+            return truncated;
         }
     }
 }
