@@ -3,6 +3,7 @@ package com.dev_madan.rce.service;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 import org.springframework.context.SmartLifecycle;
 import org.springframework.data.redis.core.StringRedisTemplate;
@@ -18,12 +19,10 @@ import lombok.RequiredArgsConstructor;
 public class WorkerService implements SmartLifecycle {
   private final DockerExecutorService dockerExecutorService;
   private final ObjectMapper objMap;
-  private final SessionRegistry sessionReg;
-
   private final StringRedisTemplate redis;
 
   private static final String JOB_QUEUE = "rce:jobs";
-  private static final int WORKER_COUNT = 6;
+  private static final int WORKER_COUNT = 2;
 
   // Executions are killed after 10s, so a running job always ends within ~10s.
   // 3s buffer for publishing final output/exit event and listener cleanup.
@@ -66,28 +65,34 @@ public class WorkerService implements SmartLifecycle {
         }
 
         RunRequest jobData = objMap.readValue(job, RunRequest.class);
+        String key = "run:" + jobData.getJobId();
 
-        System.out.println(objMap.writerWithDefaultPrettyPrinter()
-            .writeValueAsString(jobData));
-
-        sessionReg.killIfExists(jobData.getJobId());
-
-        if (sessionReg.isCancelled(jobData.getJobId())) {
+        if (redis.opsForHash().hasKey(key, "cancelRequested")) {
+          redis.opsForHash().putAll(key, Map.of(
+              "status", "CANCELLED",
+              "finishedAt", String.valueOf(System.currentTimeMillis())));
           continue;
         }
 
-        System.out.printf("[%s] Worker-%d START session=%s%n", java.time.LocalTime.now(), workerId,
+        System.out.printf("[%s] Worker-%d START job=%s%n", java.time.LocalTime.now(), workerId,
             jobData.getJobId());
 
         // Blocks until execution completes (or is killed at the 10s limit).
-        dockerExecutorService.execute(
-            jobData.getLang(),
-            jobData.getCode(),
-            jobData.getInputString(),
-            jobData.getJobId());
+        try {
+          dockerExecutorService.execute(
+              jobData.getLang(),
+              jobData.getCode(),
+              jobData.getInputString(),
+              jobData.getJobId());
+        } catch (Exception e) {
+          redis.opsForHash().putAll(key, Map.of(
+              "status", "ERROR", "verdict", "INTERNAL",
+              "stderr", String.valueOf(e.getMessage()),
+              "finishedAt", String.valueOf(System.currentTimeMillis())));
+        }
 
         System.out.printf(
-            "[%s] Worker-%d FINISHED session=%s%n",
+            "[%s] Worker-%d FINISHED job=%s%n",
             java.time.LocalTime.now(),
             workerId,
             jobData.getJobId());
@@ -96,8 +101,16 @@ public class WorkerService implements SmartLifecycle {
         if (shuttingDown || !running) {
           break;
         }
-
         System.err.printf("Worker-%d error: %s%n", workerId, e.getMessage());
+
+        // f Redis goes down, leftPop throws instantly and every worker spins at 100%
+        // CPU printing errors
+        try {
+          Thread.sleep(1000);
+        } catch (InterruptedException ie) {
+          Thread.currentThread().interrupt();
+          break;
+        }
       }
     }
     System.out.println("Worker-" + workerId + " stopped.");
