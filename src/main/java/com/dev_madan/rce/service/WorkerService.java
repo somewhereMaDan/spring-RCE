@@ -24,6 +24,7 @@ public class WorkerService implements SmartLifecycle {
   private static final String JOB_QUEUE = "rce:jobs";
   private static final int WORKER_COUNT = 2;
 
+  // Gracefull Shutdown edge-case
   // Executions are killed after 10s, so a running job always ends within ~10s.
   // 3s buffer for publishing final output/exit event and listener cleanup.
   private static final Duration MAX_EXECUTION = Duration.ofSeconds(10);

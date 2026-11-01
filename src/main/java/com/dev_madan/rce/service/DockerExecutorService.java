@@ -58,6 +58,7 @@ public class DockerExecutorService {
             return;
         }
 
+        // code-directory is read-only
         List<String> cmd = List.of("docker", "run", "--rm", "--name", "rce-" + jobId,
                 "-i", "--memory=128m", "--cpus=0.25", "--network", "none",
                 "-v", dir.toString().replace("\\", "/") + ":/code:ro",
@@ -111,7 +112,7 @@ public class DockerExecutorService {
         Process child = null;
 
         try {
-            child = new ProcessBuilder(cmd).start();
+            child = new ProcessBuilder(cmd).start(); // spawns docker 
 
             final Process p = child;
             AtomicLong killedAt = new AtomicLong(0);
@@ -142,7 +143,7 @@ public class DockerExecutorService {
             }, 500, 500, TimeUnit.MILLISECONDS);
 
             // we will discard the bytes after the limit, that covers the edge case ->
-            // output consuming too much memory (miilion lines)
+            // output consuming too much memory (ex = milion lines output)
             CappedBuffer out = new CappedBuffer(MAX_OUTPUT);
             CappedBuffer err = new CappedBuffer(MAX_OUTPUT);
 
@@ -151,9 +152,9 @@ public class DockerExecutorService {
 
             writeInput(child, inputString);
 
-            int exitCode = child.waitFor();
+            int exitCode = child.waitFor(); // it waits until the docker CLI process executes
             tOut.join();
-            tErr.join();
+            tErr.join(); // will wait until the thread is done executing
 
             Map<String, String> res = new HashMap<>();
             res.put("stdout", out.text());
