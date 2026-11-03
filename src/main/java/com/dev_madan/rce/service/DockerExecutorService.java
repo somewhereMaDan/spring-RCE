@@ -8,11 +8,11 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.UUID;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
@@ -22,8 +22,6 @@ import java.util.concurrent.atomic.AtomicLong;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
-
-import reactor.core.publisher.Sinks.One;
 
 @Service
 public class DockerExecutorService {
@@ -43,9 +41,25 @@ public class DockerExecutorService {
         switch (lang) {
             case "python" -> executePython(code, inputString, jobId);
             case "java" -> executeJava(code, inputString, jobId);
+            case "cpp" -> executeCpp(code, inputString, jobId);
             default -> throw new IllegalArgumentException(
                     "Unsupported language: " + lang);
         }
+    }
+
+    private static final List<String> SANDBOX = List.of(
+            "--memory=128m", "--memory-swap=128m", "--cpus=0.25", "--network", "none",
+            "--pids-limit=128",
+            "--read-only", "--tmpfs", "/tmp:rw,noexec,nosuid,size=32m",
+            "--tmpfs", "/run-code:rw,exec, nosuid,nodev,size=32m,mode=700,uid=1000,gid=1000",
+            "--cap-drop", "ALL", "--security-opt", "no-new-privileges");
+
+    private List<String> dockerCmd(String jobId, Path dir, List<String> tail) {
+        List<String> cmd = new ArrayList<>(List.of("docker", "run", "--rm", "--name", "rce-" + jobId, "-i"));
+        cmd.addAll(SANDBOX);
+        cmd.addAll(List.of("-v", dir.toString().replace("\\", "/") + ":/code:ro"));
+        cmd.addAll(tail);
+        return cmd;
     }
 
     private void executePython(String code, String inputString, String jobId) {
@@ -58,41 +72,44 @@ public class DockerExecutorService {
             return;
         }
 
-        // code-directory is read-only
-        List<String> cmd = List.of("docker", "run", "--rm", "--name", "rce-" + jobId,
-                "-i", "--memory=128m", "--cpus=0.25", "--network", "none",
-                "-v", dir.toString().replace("\\", "/") + ":/code:ro",
-                "python-runner", "python", "-u", "/code/main.py");
+        List<String> cmd = dockerCmd(jobId, dir, List.of("python-runner", "python", "-u", "/code/main.py"));
+
+        startProcess(cmd, inputString, jobId, () -> deleteDir(dir.toString()));
+    }
+
+    private void executeCpp(String code, String inputString, String jobId) {
+        Path dir = Path.of(hostTempPath.isBlank() ? "/app/temp" : hostTempPath, jobId);
+
+        try {
+            Files.createDirectories(dir);
+            Files.writeString(dir.resolve("main.cpp"), code);
+        } catch (IOException e) {
+            finish(jobId, "ERROR", "INTERNAL", "Failed to write code: " + e.getMessage());
+            return;
+        }
+
+        List<String> cmd = dockerCmd(jobId, dir, List.of("cpp-runner", "sh", "-c",
+                "g++ -std=c++17 -O2 -pipe /code/main.cpp -o /run-code/main && exec /run-code/main"));
 
         startProcess(cmd, inputString, jobId, () -> deleteDir(dir.toString()));
     }
 
     private void executeJava(String code, String inputString, String jobId) {
-        String runId_for_file = UUID.randomUUID().toString();
-        String filename = "Main.java";
-        Path containerTempDir = Path.of(hostTempPath.isBlank() ? "/app/temp" : hostTempPath, runId_for_file);
-        Path filePath = containerTempDir.resolve(filename);
-
-        System.out.println("containerTempDir: " + containerTempDir);
-        System.out.println("filePath: " + filePath);
+        Path dir = Path.of(hostTempPath.isBlank() ? "/app/temp" : hostTempPath, jobId);
 
         try {
-            Files.createDirectories(containerTempDir);
-            Files.writeString(filePath, code);
+            Files.createDirectories(dir);
+            Files.writeString(dir.resolve("Main.java"), code);
         } catch (IOException e) {
-            // sendError(
-            // jobId,
-            // "Failed to write code on file: " + filePath + " - " + e.getMessage());
-            // return null;
+            finish(jobId, "ERROR", "INTERNAL", "Failed to write code: " + e.getMessage());
+            return;
         }
 
-        List<String> cmd = List.of("docker", "run", "--rm",
-                "-i", "--memory=128m", "--cpus=0.25", "--network", "none",
-                "-v", String.format("%s:/code", containerTempDir.toString()), "java-runner", "sh", "-c",
-                String.format("javac -d /tmp/java-out /code/%s && java -cp /tmp/java-out Main", filename));
+        List<String> cmd = dockerCmd(jobId, dir, List.of("java-runner", "sh", "-c",
+                "javac -d /tmp/java-out /code/Main.java && java -cp /tmp/java-out Main"));
 
         startProcess(cmd, inputString, jobId, () -> {
-            deleteDir(containerTempDir.toString());
+            deleteDir(dir.toString());
         });
     }
 
@@ -103,16 +120,21 @@ public class DockerExecutorService {
         AtomicBoolean timedOut = new AtomicBoolean(false);
         AtomicBoolean cancelled = new AtomicBoolean(false);
 
-        ScheduledExecutorService schedular = Executors.newSingleThreadScheduledExecutor(); // schedular is started in separate thread and all stdout, stderr threads use 
-        // this schedular shared thread, this stdout, stderr does not have to maintain seprate thread everytime. 
+        ScheduledExecutorService schedular = Executors.newSingleThreadScheduledExecutor(); // schedular is started in
+                                                                                           // separate thread and all
+                                                                                           // stdout, stderr threads use
+        // this schedular shared thread, this stdout, stderr does not have to maintain
+        // seprate thread everytime.
 
-        // One subtle trade-off A single scheduler thread executes watchdog checks sequentially. 
-        // If one check blocks—for example, killContainer(jobId) takes a long time—other jobs' checks may be delayed.
+        // One subtle trade-off A single scheduler thread executes watchdog checks
+        // sequentially.
+        // If one check blocks—for example, killContainer(jobId) takes a long time—other
+        // jobs' checks may be delayed.
 
         Process child = null;
 
         try {
-            child = new ProcessBuilder(cmd).start(); // spawns docker 
+            child = new ProcessBuilder(cmd).start(); // spawns docker
 
             final Process p = child;
             AtomicLong killedAt = new AtomicLong(0);
@@ -122,7 +144,8 @@ public class DockerExecutorService {
             schedular.scheduleAtFixedRate(() -> {
                 try {
                     if (timedOut.get() || cancelled.get()) {
-                        // if the docker run CLI process is still alive after killing container, we'll destroyForcibly()
+                        // if the docker run CLI process is still alive after killing container, we'll
+                        // destroyForcibly()
                         if (p.isAlive() && System.currentTimeMillis() - killedAt.get() > 2000) {
                             p.destroyForcibly(); // last resort: kills the CLI, unblocks waitFor
                             return;

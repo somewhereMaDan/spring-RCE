@@ -20,13 +20,13 @@ public class KafkaConsumer {
     this.sessionRegistry = sessionRegistry;
   }
 
-  @KafkaListener(topics = "execution-output", groupId = "ws-gateway")
-  public void consumeEvent(ConsumerRecord<String, String> record) {
-    Header h = record.headers().lastHeader("runId");
-    String runId = h == null ? null : new String(h.value(), StandardCharsets.UTF_8);
-    if (!Objects.equals(runId, sessionRegistry.getCurrentRun(record.key())))
-      return; // stale
-    System.out.println("runId: " + runId + " Value: " + record.value().toString());
-    simpMessagingTemplate.convertAndSend("/topic/output/" + record.key(), (Object) record.value());
-  }
+  // @KafkaListener(topics = "execution-output", groupId = "ws-gateway")
+  // public void consumeEvent(ConsumerRecord<String, String> record) {
+  //   Header h = record.headers().lastHeader("runId");
+  //   String runId = h == null ? null : new String(h.value(), StandardCharsets.UTF_8);
+  //   if (!Objects.equals(runId, sessionRegistry.getCurrentRun(record.key())))
+  //     return; // stale
+  //   System.out.println("runId: " + runId + " Value: " + record.value().toString());
+  //   simpMessagingTemplate.convertAndSend("/topic/output/" + record.key(), (Object) record.value());
+  // }
 }
