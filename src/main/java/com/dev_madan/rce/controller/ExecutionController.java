@@ -32,7 +32,8 @@ public class ExecutionController {
             @RequestBody RunRequest req) throws Exception {
 
         String jobId = UUID.randomUUID().toString();
-        System.out.printf("request came to push the job" + jobId + " to the queue");
+        System.out.println(
+                "[GATEWAY] Request received for submit, jobId=" + jobId);
         req.setJobId(jobId);
 
         redis.opsForHash().putAll(

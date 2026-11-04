@@ -71,12 +71,9 @@ public class DockerExecutorService {
         // Path visible to the host Docker daemon
         Path hostDir = Path.of(hostTempPath, jobId);
 
-
         try {
             Files.createDirectories(workerDir);
-            Path filepath = Files.writeString(workerDir.resolve("main.py"), code);
-
-            System.out.println("Created file: " + filepath.toAbsolutePath());
+            Files.writeString(workerDir.resolve("main.py"), code);
         } catch (IOException e) {
             finish(jobId, "ERROR", "INTERNAL", "Failed to write code: " + e.getMessage());
             return;
@@ -97,9 +94,8 @@ public class DockerExecutorService {
 
         try {
             Files.createDirectories(workerDir);
-            Path filepath = Files.writeString(workerDir.resolve("main.cpp"), code);
+            Files.writeString(workerDir.resolve("main.cpp"), code);
 
-            System.out.println("Created file: " + filepath.toAbsolutePath());
         } catch (IOException e) {
             finish(jobId, "ERROR", "INTERNAL", "Failed to write code: " + e.getMessage());
             return;
@@ -113,8 +109,10 @@ public class DockerExecutorService {
 
     // Suppose the job ID is 123.
     // 1. Java creates /app/temp/123/main.cpp.
-    // 2. Because of the Compose volume mount, the same file exists on your host at /home/madan/Desktop/work/spring-RCE/temp/123/main.cpp.
-    // 3. Java asks Docker to mount /home/madan/Desktop/work/spring-RCE/temp/123 into /code.
+    // 2. Because of the Compose volume mount, the same file exists on your host at
+    // /home/madan/Desktop/work/spring-RCE/temp/123/main.cpp.
+    // 3. Java asks Docker to mount /home/madan/Desktop/work/spring-RCE/temp/123
+    // into /code.
     // 4. The runner sees /code/main.cpp.
     // 5. Compilation and execution happen inside the isolated runner.
     // 6. The worker collects stdout, stderr and exit code.
@@ -130,14 +128,12 @@ public class DockerExecutorService {
 
         try {
             Files.createDirectories(workerDir);
-            Path filepath = Files.writeString(workerDir.resolve("Main.java"), code);
+            Files.writeString(workerDir.resolve("Main.java"), code);
 
-            System.out.println("Created file: " + filepath.toAbsolutePath());
         } catch (IOException e) {
             finish(jobId, "ERROR", "INTERNAL", "Failed to write code: " + e.getMessage());
             return;
         }
-
 
         List<String> cmd = dockerCmd(jobId, hostDir, List.of("java-runner", "sh", "-c",
                 "javac -d /tmp/java-out /code/Main.java && java -cp /tmp/java-out Main"));

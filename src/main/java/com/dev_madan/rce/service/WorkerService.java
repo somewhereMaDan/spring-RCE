@@ -68,6 +68,9 @@ public class WorkerService implements SmartLifecycle {
         }
 
         RunRequest jobData = objMap.readValue(job, RunRequest.class);
+
+        System.out.println(
+            "[WORKER-" + workerId + "] Picked job: " + jobData.getJobId());
         String key = "run:" + jobData.getJobId();
 
         if (redis.opsForHash().hasKey(key, "cancelRequested")) {
