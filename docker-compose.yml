@@ -1,0 +1,44 @@
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: redis-queue-rce
+    networks:
+      - internal
+
+  gateway:
+    image: rce-app
+    container_name: api-gateway-rce
+    build:
+      context: .
+      dockerfile: dockerfile
+    environment:
+      SPRING_PROFILES_ACTIVE: gateway
+      SERVER_PORT: 8081
+      SPRING_DATA_REDIS_HOST: redis
+    ports:
+      - "8081:8081"
+    networks:
+      - internal
+    depends_on:
+      - redis
+
+  worker:
+    image: rce-app
+    container_name: worker-service-rce
+    environment:
+      SPRING_PROFILES_ACTIVE: worker
+      SPRING_DATA_REDIS_HOST: redis
+      APP_WORKER_TEMP_PATH: /app/temp
+      APP_HOST_TEMP_PATH: /home/madan/Desktop/work/spring-RCE/temp
+    volumes:
+      - /home/madan/Desktop/work/spring-RCE/temp:/app/temp
+      - /var/run/docker.sock:/var/run/docker.sock
+      # mounting docker socket so that worker running inside docker can communicate with the host docker daemon in order to spawn containers
+    networks:
+      - internal
+    depends_on:
+      - redis
+
+networks:
+  internal:
+    driver: bridge

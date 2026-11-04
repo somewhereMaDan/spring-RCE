@@ -1,0 +1,69 @@
+1. Separate the control plane from the execution plane
+Your current architecture is approximately:
+API Gateway / Spring Boot
+
+Receives code execution requests
+
+
+Redis Queue
+
+
+Worker container
+Docker socket access
+Reads jobs and creates execution containers
+
+
+Execution containers
+
+Run Python / Java / other submitted code
+
+
+The problem is that your worker is both:
+- The application responsible for orchestration.
+- The component with powerful access to the host.
+In production, these responsibilities should be separated.
+2. Move Docker control to a dedicated execution service
+Instead of giving the Spring Boot worker direct access to Docker, introduce another component.
+
+For example:
+- Worker service: Consumes Redis jobs, validates requests, manages execution lifecycle.
+- Execution service: Responsible for creating and destroying isolated execution environments.
+- Execution environment: Runs the submitted code.
+The architecture becomes:
+Spring Boot API Gateway
+
+
+Redis Queue
+
+
+Worker / Scheduler
+
+Consumes jobs, tracks status, applies concurrency limits
+
+
+Execution Service
+
+Runs on dedicated execution infrastructure
+
+
+Isolated execution environments
+
+One disposable environment per job
+
+
+The execution service is the only component responsible for managing execution infrastructure.
+
+Your Spring Boot worker communicates with it through a restricted API rather than accessing the host Docker socket.
+
+This is a better separation of responsibilities, but it doesn't automatically make execution safe. The execution service itself needs strong isolation.
+
+3. Use stronger isolation than ordinary Docker containers
+This is probably the most important production consideration for your project.
+
+Remember:
+
+Docker containers share the host operating system's kernel.
+
+Even if you create a separate container for every user, a vulnerability in the container runtime or kernel could potentially compromise the host.
+
+like gVisor

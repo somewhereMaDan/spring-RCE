@@ -6,6 +6,7 @@ import java.util.List;
 import java.util.Map;
 
 import org.springframework.context.SmartLifecycle;
+import org.springframework.context.annotation.Profile;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 
@@ -14,6 +15,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 
 import lombok.RequiredArgsConstructor;
 
+@Profile("worker")
 @RequiredArgsConstructor
 @Service
 public class WorkerService implements SmartLifecycle {

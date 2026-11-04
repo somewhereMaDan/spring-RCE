@@ -4,6 +4,7 @@ import java.time.Duration;
 import java.util.Map;
 import java.util.UUID;
 
+import org.springframework.context.annotation.Profile;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.DeleteMapping;
@@ -18,6 +19,7 @@ import com.dev_madan.rce.dto.RunRequest;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 
+@Profile("gateway")
 @RestController
 @RequestMapping("/runs")
 @RequiredArgsConstructor
@@ -30,6 +32,7 @@ public class ExecutionController {
             @RequestBody RunRequest req) throws Exception {
 
         String jobId = UUID.randomUUID().toString();
+        System.out.printf("request came to push the job" + jobId + " to the queue");
         req.setJobId(jobId);
 
         redis.opsForHash().putAll(

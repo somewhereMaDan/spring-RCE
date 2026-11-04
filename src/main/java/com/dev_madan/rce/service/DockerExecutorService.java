@@ -19,6 +19,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 
+import org.apache.kafka.common.utils.Java;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
@@ -51,7 +52,7 @@ public class DockerExecutorService {
             "--memory=128m", "--memory-swap=128m", "--cpus=0.25", "--network", "none",
             "--pids-limit=128",
             "--read-only", "--tmpfs", "/tmp:rw,noexec,nosuid,size=32m",
-            "--tmpfs", "/run-code:rw,exec, nosuid,nodev,size=32m,mode=700,uid=1000,gid=1000",
+            "--tmpfs", "/run-code:rw,exec,nosuid,nodev,size=32m,mode=700,uid=1000,gid=1000",
             "--cap-drop", "ALL", "--security-opt", "no-new-privileges");
 
     private List<String> dockerCmd(String jobId, Path dir, List<String> tail) {
@@ -63,53 +64,86 @@ public class DockerExecutorService {
     }
 
     private void executePython(String code, String inputString, String jobId) {
-        Path dir = Path.of(hostTempPath.isBlank() ? "/app/temp" : hostTempPath, jobId);
+
+        // Path visible to the worker container
+        Path workerDir = Path.of("/app/temp", jobId);
+
+        // Path visible to the host Docker daemon
+        Path hostDir = Path.of(hostTempPath, jobId);
+
+
         try {
-            Files.createDirectories(dir);
-            Files.writeString(dir.resolve("main.py"), code);
+            Files.createDirectories(workerDir);
+            Path filepath = Files.writeString(workerDir.resolve("main.py"), code);
+
+            System.out.println("Created file: " + filepath.toAbsolutePath());
         } catch (IOException e) {
             finish(jobId, "ERROR", "INTERNAL", "Failed to write code: " + e.getMessage());
             return;
         }
 
-        List<String> cmd = dockerCmd(jobId, dir, List.of("python-runner", "python", "-u", "/code/main.py"));
+        List<String> cmd = dockerCmd(jobId, hostDir, List.of("python-runner", "python", "-u", "/code/main.py"));
 
-        startProcess(cmd, inputString, jobId, () -> deleteDir(dir.toString()));
+        startProcess(cmd, inputString, jobId, () -> deleteDir(workerDir.toString()));
     }
 
     private void executeCpp(String code, String inputString, String jobId) {
-        Path dir = Path.of(hostTempPath.isBlank() ? "/app/temp" : hostTempPath, jobId);
+
+        // Path visible to the worker container
+        Path workerDir = Path.of("/app/temp", jobId);
+
+        // Path visible to the host Docker daemon
+        Path hostDir = Path.of(hostTempPath, jobId);
 
         try {
-            Files.createDirectories(dir);
-            Files.writeString(dir.resolve("main.cpp"), code);
+            Files.createDirectories(workerDir);
+            Path filepath = Files.writeString(workerDir.resolve("main.cpp"), code);
+
+            System.out.println("Created file: " + filepath.toAbsolutePath());
         } catch (IOException e) {
             finish(jobId, "ERROR", "INTERNAL", "Failed to write code: " + e.getMessage());
             return;
         }
 
-        List<String> cmd = dockerCmd(jobId, dir, List.of("cpp-runner", "sh", "-c",
+        List<String> cmd = dockerCmd(jobId, hostDir, List.of("cpp-runner", "sh", "-c",
                 "g++ -std=c++17 -O2 -pipe /code/main.cpp -o /run-code/main && exec /run-code/main"));
 
-        startProcess(cmd, inputString, jobId, () -> deleteDir(dir.toString()));
+        startProcess(cmd, inputString, jobId, () -> deleteDir(workerDir.toString()));
     }
 
+    // Suppose the job ID is 123.
+    // 1. Java creates /app/temp/123/main.cpp.
+    // 2. Because of the Compose volume mount, the same file exists on your host at /home/madan/Desktop/work/spring-RCE/temp/123/main.cpp.
+    // 3. Java asks Docker to mount /home/madan/Desktop/work/spring-RCE/temp/123 into /code.
+    // 4. The runner sees /code/main.cpp.
+    // 5. Compilation and execution happen inside the isolated runner.
+    // 6. The worker collects stdout, stderr and exit code.
+    // 7. The worker deletes /app/temp/123, which also removes the host-side files.
+
     private void executeJava(String code, String inputString, String jobId) {
-        Path dir = Path.of(hostTempPath.isBlank() ? "/app/temp" : hostTempPath, jobId);
+
+        // Path visible to the worker container
+        Path workerDir = Path.of("/app/temp", jobId);
+
+        // Path visible to the host Docker daemon
+        Path hostDir = Path.of(hostTempPath, jobId);
 
         try {
-            Files.createDirectories(dir);
-            Files.writeString(dir.resolve("Main.java"), code);
+            Files.createDirectories(workerDir);
+            Path filepath = Files.writeString(workerDir.resolve("Main.java"), code);
+
+            System.out.println("Created file: " + filepath.toAbsolutePath());
         } catch (IOException e) {
             finish(jobId, "ERROR", "INTERNAL", "Failed to write code: " + e.getMessage());
             return;
         }
 
-        List<String> cmd = dockerCmd(jobId, dir, List.of("java-runner", "sh", "-c",
+
+        List<String> cmd = dockerCmd(jobId, hostDir, List.of("java-runner", "sh", "-c",
                 "javac -d /tmp/java-out /code/Main.java && java -cp /tmp/java-out Main"));
 
         startProcess(cmd, inputString, jobId, () -> {
-            deleteDir(dir.toString());
+            deleteDir(workerDir.toString());
         });
     }
 
@@ -120,9 +154,8 @@ public class DockerExecutorService {
         AtomicBoolean timedOut = new AtomicBoolean(false);
         AtomicBoolean cancelled = new AtomicBoolean(false);
 
-        ScheduledExecutorService schedular = Executors.newSingleThreadScheduledExecutor(); // schedular is started in
-                                                                                           // separate thread and all
-                                                                                           // stdout, stderr threads use
+        ScheduledExecutorService schedular = Executors.newSingleThreadScheduledExecutor();
+        // schedular is started in separate thread and all stdout, stderr threads use
         // this schedular shared thread, this stdout, stderr does not have to maintain
         // seprate thread everytime.
 
