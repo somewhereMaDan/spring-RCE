@@ -58,6 +58,9 @@ public class ExecutionController {
 
         Map<Object, Object> result = redis.opsForHash().entries("run:" + jobId);
 
+        System.out.println(
+                "[GATEWAY] Get Request for job=" + jobId);
+
         return result.isEmpty()
                 ? ResponseEntity.notFound().build()
                 : ResponseEntity.ok(result);
