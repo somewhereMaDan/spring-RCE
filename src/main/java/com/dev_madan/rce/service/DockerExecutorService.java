@@ -56,7 +56,8 @@ public class DockerExecutorService {
             "--cap-drop", "ALL", "--security-opt", "no-new-privileges");
 
     private List<String> dockerCmd(String jobId, Path dir, List<String> tail) {
-        List<String> cmd = new ArrayList<>(List.of("docker", "run", "--rm", "--name", "rce-" + jobId, "-i"));
+        List<String> cmd = new ArrayList<>(
+                List.of("docker", "run", "--rm", "--name", "rce-" + jobId, "--stop-timeout", "13", "-i"));
         cmd.addAll(SANDBOX);
         cmd.addAll(List.of("-v", dir.toString().replace("\\", "/") + ":/code:ro"));
         cmd.addAll(tail);
@@ -79,7 +80,17 @@ public class DockerExecutorService {
             return;
         }
 
-        List<String> cmd = dockerCmd(jobId, hostDir, List.of("python-runner", "python", "-u", "/code/main.py"));
+        // List<String> cmd = dockerCmd(jobId, hostDir, List.of("python-runner",
+        // "python", "-u", "/code/main.py"));
+
+        // Docker starts sh as PID 1, the python worker gets SIGKILL unexpectedly (maybe restart of instance)
+        // container keeps running independently, after 12s timeout sends SIGKILL to py program
+        // timeout exits then shell exits
+        // Docker detects PID 1 has exited and stops/removes the container (--rm).
+        
+        List<String> cmd = dockerCmd(jobId, hostDir, List.of(
+                "python-runner", "sh", "-c",
+                "exec timeout -s KILL 12s python -u /code/main.py"));
 
         startProcess(cmd, inputString, jobId, () -> deleteDir(workerDir.toString()));
     }
@@ -102,7 +113,7 @@ public class DockerExecutorService {
         }
 
         List<String> cmd = dockerCmd(jobId, hostDir, List.of("cpp-runner", "sh", "-c",
-                "g++ -std=c++17 -O2 -pipe /code/main.cpp -o /run-code/main && exec /run-code/main"));
+                "g++ -std=c++17 -O2 -pipe /code/main.cpp -o /run-code/main && exec timeout -s KILL 12s /run-code/main"));
 
         startProcess(cmd, inputString, jobId, () -> deleteDir(workerDir.toString()));
     }
@@ -135,8 +146,13 @@ public class DockerExecutorService {
             return;
         }
 
-        List<String> cmd = dockerCmd(jobId, hostDir, List.of("java-runner", "sh", "-c",
-                "javac -d /tmp/java-out /code/Main.java && java -cp /tmp/java-out Main"));
+        // List<String> cmd = dockerCmd(jobId, hostDir, List.of("java-runner", "sh",
+        // "-c",
+        // "javac -d /tmp/java-out /code/Main.java && java -cp /tmp/java-out Main"));
+
+        List<String> cmd = dockerCmd(jobId, hostDir, List.of(
+                "java-runner", "sh", "-c",
+                "javac -d /tmp/java-out /code/Main.java && exec timeout -s KILL 12s java -cp /tmp/java-out Main"));
 
         startProcess(cmd, inputString, jobId, () -> {
             deleteDir(workerDir.toString());
@@ -220,7 +236,9 @@ public class DockerExecutorService {
                 res.put("status", "CANCELLED");
             } else {
                 res.put("status", "DONE");
-                res.put("verdict", timedOut.get() ? "TLE" : exitCode == 0 ? "OK" : exitCode == 137 ? "MLE" : "RE");
+                res.put("verdict", timedOut.get() || exitCode == 124 ? "TLE"
+                        : exitCode == 0 ? "OK" : exitCode == 137 ? "MLE" : "RE");
+                // == 137 ? "MLE" : "RE");
             }
             redis.opsForHash().putAll(key, res);
             redis.expire(key, Duration.ofHours(1));

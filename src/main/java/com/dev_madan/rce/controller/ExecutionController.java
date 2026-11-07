@@ -45,9 +45,8 @@ public class ExecutionController {
 
         redis.expire("run:" + jobId, Duration.ofHours(1));
 
-        redis.opsForList().rightPush(
-                "rce:jobs",
-                om.writeValueAsString(req));
+        // redis.opsForList().leftPush("rce:jobs", om.writeValueAsString(req));
+        redis.opsForStream().add("rce:stream", Map.of("payload", om.writeValueAsString(req)));
 
         return ResponseEntity.accepted().body(Map.of("jobId", jobId));
     }

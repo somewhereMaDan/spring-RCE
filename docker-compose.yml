@@ -33,6 +33,7 @@ services:
 
   worker:
     image: worker-rce
+    stop_grace_period: 15s # as we have 13s for graceful shutdown so workers can exit
     build:
       context: .
       dockerfile: dockerfile
