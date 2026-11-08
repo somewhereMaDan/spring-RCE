@@ -116,3 +116,35 @@ Key finding: container concurrency stayed flat at the permit count regardless of
 Built by Madan Mohan Kumar — https://github.com/somewhereMaDan · [LinkedIn](https://www.linkedin.com/in/madanmohankumar/)
 
 </div>
+
+The timeout flow for preventing the hanging docker container consuming resources if an worker dies with SIGKILL
+
+Docker daemon
+    |
+    └── Container
+          |
+          └── PID 1: sh
+                 |
+                 └── exec replaces sh
+                       |
+                       └── timeout (PID 1)
+                              |
+                              └── python (child process)
+
+1. Docker starts the container with sh.
+
+2. exec replaces the shell process with timeout. It does not create another process.
+
+3. timeout launches Python as its child.
+
+4. Worker receives SIGKILL unexpectedly.
+
+5. The Docker daemon continues managing the container independently.
+
+6. After 12 seconds, timeout sends SIGKILL to Python.
+
+7. timeout exits.
+
+8. PID 1 exits, so the container stops.
+
+9. Docker's --rm automatically removes the stopped container.
