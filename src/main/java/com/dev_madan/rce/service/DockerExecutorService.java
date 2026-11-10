@@ -19,10 +19,12 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 
-import org.apache.kafka.common.utils.Java;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
+
+import com.dev_madan.rce.pool.WarmPool;
 
 @Service
 public class DockerExecutorService {
@@ -34,22 +36,37 @@ public class DockerExecutorService {
     private static final int MAX_OUTPUT = 64 * 1024;
     private static final long TIME_LIMIT_MS = 10_000;
 
-    public DockerExecutorService(StringRedisTemplate redisTemplate) {
+    private final WarmPool warmPool; // null outside the worker profile
+
+    @Value("${app.warm-pool:true}")
+    private boolean poolEnabled;
+
+    public DockerExecutorService(StringRedisTemplate redisTemplate, ObjectProvider<WarmPool> pool) {
         this.redis = redisTemplate;
+        this.warmPool = pool.getIfAvailable();
     }
 
-    public void execute(String lang, String code, String inputString, String jobId) {
+    public void execute(String lang, String code, String inputString, String jobId, int slot) {
         switch (lang) {
             case "python" -> executePython(code, inputString, jobId);
             case "java" -> executeJava(code, inputString, jobId);
-            case "cpp" -> executeCpp(code, inputString, jobId);
+            case "cpp" -> {
+                if (warmPool != null && poolEnabled) {
+                    System.out.println("new warm containerssss");
+                    executeCppWarm(code, inputString, jobId, slot);
+                } else {
+                    System.out.println("olderrr");
+                    executeCpp(code, inputString, jobId);
+                }
+            }
+
             default -> throw new IllegalArgumentException(
                     "Unsupported language: " + lang);
         }
     }
 
     private static final List<String> SANDBOX = List.of(
-            "--memory=128m", "--memory-swap=128m", "--cpus=0.25", "--network", "none",
+            "--memory=256m", "--memory-swap=256m", "--cpus=0.5", "--network", "none",
             "--pids-limit=128",
             "--read-only", "--tmpfs", "/tmp:rw,noexec,nosuid,size=32m",
             "--tmpfs", "/run-code:rw,exec,nosuid,nodev,size=32m,mode=700,uid=1000,gid=1000",
@@ -62,6 +79,32 @@ public class DockerExecutorService {
         cmd.addAll(List.of("-v", dir.toString().replace("\\", "/") + ":/code:ro"));
         cmd.addAll(tail);
         return cmd;
+    }
+
+    private void executeCppWarm(String code, String inputString, String jobId, int slot) {
+        Path src = warmPool.workerDir(slot).resolve("main.cpp");
+        try {
+            Files.writeString(src, code);
+        } catch (IOException e) {
+            finish(jobId, "ERROR", "INTERNAL", "Failed to write code: " + e.getMessage());
+            return;
+        }
+        String container = warmPool.containerName(slot);
+        List<String> cmd = List.of("docker", "exec", "-i", container, "sh", "-c",
+                "find /run-code /tmp -mindepth 1 -delete 2>/dev/null; "
+                        + "g++ -std=c++17 -O2 -pipe /code/main.cpp -o /run-code/main "
+                        + "&& exec timeout -s KILL 12s /run-code/main");
+
+        // Delete only the file, never the directory: the directory is bind-mounted into
+        // the
+        // container, and recreating it would leave the container pointing at a deleted
+        // inode.
+        startProcess(cmd, inputString, jobId, container, slot, () -> {
+            try {
+                Files.deleteIfExists(src);
+            } catch (IOException ignored) {
+            }
+        });
     }
 
     private void executePython(String code, String inputString, String jobId) {
@@ -83,20 +126,21 @@ public class DockerExecutorService {
         // List<String> cmd = dockerCmd(jobId, hostDir, List.of("python-runner",
         // "python", "-u", "/code/main.py"));
 
-        // Docker starts sh as PID 1, the python worker gets SIGKILL unexpectedly (maybe restart of instance)
-        // container keeps running independently, after 12s timeout sends SIGKILL to py program
+        // Docker starts sh as PID 1, the python worker gets SIGKILL unexpectedly (maybe
+        // restart of instance)
+        // container keeps running independently, after 12s timeout sends SIGKILL to py
+        // program
         // timeout exits then shell exits
         // Docker detects PID 1 has exited and stops/removes the container (--rm).
-        
+
         List<String> cmd = dockerCmd(jobId, hostDir, List.of(
                 "python-runner", "sh", "-c",
                 "exec timeout -s KILL 12s python -u /code/main.py"));
 
-        startProcess(cmd, inputString, jobId, () -> deleteDir(workerDir.toString()));
+        startProcess(cmd, inputString, jobId, "rce-" + jobId, -1, () -> deleteDir(workerDir.toString()));
     }
 
     private void executeCpp(String code, String inputString, String jobId) {
-
         // Path visible to the worker container
         Path workerDir = Path.of("/app/temp", jobId);
 
@@ -115,7 +159,7 @@ public class DockerExecutorService {
         List<String> cmd = dockerCmd(jobId, hostDir, List.of("cpp-runner", "sh", "-c",
                 "g++ -std=c++17 -O2 -pipe /code/main.cpp -o /run-code/main && exec timeout -s KILL 12s /run-code/main"));
 
-        startProcess(cmd, inputString, jobId, () -> deleteDir(workerDir.toString()));
+        startProcess(cmd, inputString, jobId, "rce-" + jobId, -1, () -> deleteDir(workerDir.toString()));
     }
 
     // Suppose the job ID is 123.
@@ -154,17 +198,19 @@ public class DockerExecutorService {
                 "java-runner", "sh", "-c",
                 "javac -d /tmp/java-out /code/Main.java && exec timeout -s KILL 12s java -cp /tmp/java-out Main"));
 
-        startProcess(cmd, inputString, jobId, () -> {
+        startProcess(cmd, inputString, jobId, "rce-" + jobId, -1, () -> {
             deleteDir(workerDir.toString());
         });
     }
 
-    private void startProcess(List<String> cmd, String inputString, String jobId, Runnable cleanup) {
+    private void startProcess(List<String> cmd, String inputString, String jobId,
+            String killTarget, int slot, Runnable cleanup) {
         String key = "run:" + jobId;
         long start = System.currentTimeMillis();
 
         AtomicBoolean timedOut = new AtomicBoolean(false);
         AtomicBoolean cancelled = new AtomicBoolean(false);
+        boolean clean = false;
 
         ScheduledExecutorService schedular = Executors.newSingleThreadScheduledExecutor();
         // schedular is started in separate thread and all stdout, stderr threads use
@@ -193,17 +239,20 @@ public class DockerExecutorService {
                         // destroyForcibly()
                         if (p.isAlive() && System.currentTimeMillis() - killedAt.get() > 2000) {
                             p.destroyForcibly(); // last resort: kills the CLI, unblocks waitFor
-                            return;
                         }
+                        return;
                     }
                     if (System.currentTimeMillis() - start >= TIME_LIMIT_MS) {
+                        System.out.println("[WD] job=" + jobId + " limit hit at " + (System.currentTimeMillis() - start)
+                                + "ms, killing " + killTarget);
+                        timedOut.set(true);
                         timedOut.set(true);
                         killedAt.set(System.currentTimeMillis());
-                        killContainer(jobId);
+                        killContainer(killTarget);
                     } else if (redis.opsForHash().hasKey(key, "cancelRequested")) {
                         cancelled.set(true);
                         killedAt.set(System.currentTimeMillis());
-                        killContainer(jobId);
+                        killContainer(killTarget);
                     }
                 } catch (Exception ignored) {
                     // TODO: handle exception
@@ -242,7 +291,7 @@ public class DockerExecutorService {
             }
             redis.opsForHash().putAll(key, res);
             redis.expire(key, Duration.ofHours(1));
-
+            clean = true;
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             finish(jobId, "ERROR", "INTERNAL", "Interrupted");
@@ -251,8 +300,11 @@ public class DockerExecutorService {
         } finally {
             schedular.shutdownNow();
             if (child != null && child.isAlive())
-                killContainer(jobId);
+                killContainer(killTarget);
             cleanup.run();
+            if (slot >= 0 && warmPool != null && (!clean || timedOut.get() || cancelled.get())) {
+                warmPool.recycle(slot);
+            }
         }
     }
 
@@ -262,12 +314,21 @@ public class DockerExecutorService {
                 "finishedAt", String.valueOf(System.currentTimeMillis())));
     }
 
-    private void killContainer(String jobId) {
+    private void killContainer(String name) {
         try {
-            new ProcessBuilder("docker", "rm", "-f", "rce-" + jobId)
-                    .redirectOutput(ProcessBuilder.Redirect.DISCARD)
-                    .redirectErrorStream(true).start().waitFor(5, TimeUnit.SECONDS);
-        } catch (Exception ignored) {
+            long t0 = System.currentTimeMillis();
+            Process rm = new ProcessBuilder("docker", "rm", "-f", name)
+                    .redirectErrorStream(true).start();
+            boolean done = rm.waitFor(5, TimeUnit.SECONDS);
+            String out = new String(rm.getInputStream().readAllBytes()).trim();
+            System.out.println("[WD] rm -f " + name + " done=" + done
+                    + (done ? " exit=" + rm.exitValue() : "")
+                    + " in " + (System.currentTimeMillis() - t0) + "ms out='" + out + "'");
+        } catch (InterruptedException e) {
+            // job already ended, the watchdog was shut down mid-wait; the rm was already
+            // issued
+        } catch (Exception e) {
+            System.out.println("[WD] rm -f failed: " + e);
         }
     }
 

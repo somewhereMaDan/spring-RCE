@@ -14,7 +14,7 @@ services:
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
     networks:
       - internal
-    depends_on: 
+    depends_on:
       - gateway
 
   gateway:
@@ -38,6 +38,8 @@ services:
       context: .
       dockerfile: dockerfile
     environment:
+      POOL_CPUS: ${POOL_CPUS:-0.25}
+      APP_WARM_POOL: ${APP_WARM_POOL:-true}
       SPRING_PROFILES_ACTIVE: worker
       SPRING_DATA_REDIS_HOST: redis
       APP_WORKER_TEMP_PATH: /app/temp

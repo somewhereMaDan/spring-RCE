@@ -13,6 +13,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.data.redis.connection.stream.*;
 
 import com.dev_madan.rce.dto.RunRequest;
+import com.dev_madan.rce.pool.WarmPool;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.data.domain.*;
 
@@ -25,6 +26,7 @@ public class WorkerService implements SmartLifecycle {
   private final DockerExecutorService dockerExecutorService;
   private final ObjectMapper objMap;
   private final StringRedisTemplate redis;
+  private final WarmPool warmPool;
 
   // private static final String JOB_QUEUE = "rce:jobs";
   // private static final int WORKER_COUNT = 2;
@@ -33,7 +35,7 @@ public class WorkerService implements SmartLifecycle {
 
   private static final String STREAM = "rce:stream";
   private static final String GROUP = "workers";
-  private static final int WORKER_COUNT = 2;
+  private static final int WORKER_COUNT = 6;
 
   private static final int MAX_DELIVERIES = 3;
   private static final String DEAD_STREAM = "rce:dead";
@@ -53,6 +55,7 @@ public class WorkerService implements SmartLifecycle {
 
   @Override
   public void start() {
+    warmPool.start(WORKER_COUNT);
     createGroupIfMissing();
     for (int i = 0; i < WORKER_COUNT; i++) {
       int workerId = i;
@@ -140,18 +143,21 @@ public class WorkerService implements SmartLifecycle {
               jobData.getJobId());
 
           // Blocks until execution completes (or is killed at the 10s limit).
-          try {
-            new ProcessBuilder("docker", "rm", "-f", "rce-" + jobData.getJobId())
-                .redirectOutput(ProcessBuilder.Redirect.DISCARD)
-                .redirectErrorStream(true).start().waitFor(5, TimeUnit.SECONDS);
-          } catch (Exception ignored) {
+          if (!"cpp".equals(jobData.getLang())) {
+            try {
+              new ProcessBuilder("docker", "rm", "-f", "rce-" + jobData.getJobId())
+                  .redirectOutput(ProcessBuilder.Redirect.DISCARD)
+                  .redirectErrorStream(true).start().waitFor(5, TimeUnit.SECONDS);
+            } catch (Exception ignored) {
+            }
           }
           try {
             dockerExecutorService.execute(
                 jobData.getLang(),
                 jobData.getCode(),
                 jobData.getInputString(),
-                jobData.getJobId());
+                jobData.getJobId(),
+                workerId);
           } catch (Exception e) {
             redis.opsForHash().putAll(key, Map.of(
                 "status", "ERROR", "verdict", "INTERNAL",
@@ -291,6 +297,7 @@ public class WorkerService implements SmartLifecycle {
 
     running = false;
     active = false;
+    warmPool.shutdown();
 
     boolean allStopped = workers.stream().noneMatch(Thread::isAlive);
     if (allStopped) {
