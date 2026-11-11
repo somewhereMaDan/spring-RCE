@@ -1,5 +1,4 @@
 package com.dev_madan.rce.pool;
-// TODO: add your package line here, plus the imports below if your IDE doesn't.
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -25,10 +24,12 @@ import org.springframework.stereotype.Service;
 @Profile("worker")
 @Service
 public class WarmPool {
-
+    int count = 0;
     private static final String IMAGE = "cpp-runner";
+    private static final int IDLE_PROCS = 2;
 
-    // Per-slot CPU quota. Override with POOL_CPUS (e.g. 1) to test how much the cap limits throughput.
+    // Per-slot CPU quota. Override with POOL_CPUS (e.g. 1) to test how much the cap
+    // limits throughput.
     private static final String POOL_CPUS = System.getenv().getOrDefault("POOL_CPUS", "0.25");
 
     // Same limits as DockerExecutorService.SANDBOX. Duplicated on purpose for now;
@@ -46,7 +47,8 @@ public class WarmPool {
     @Value("${app.host-temp-path:}")
     private String hostTempPath;
 
-    // Container hostname: unique per worker container, so scaled workers never collide.
+    // Container hostname: unique per worker container, so scaled workers never
+    // collide.
     private final String owner = System.getenv().getOrDefault("HOSTNAME", "local");
 
     private int slotCount;
@@ -57,7 +59,8 @@ public class WarmPool {
         }
         this.slotCount = slotCount;
 
-        // Leftovers from a previous run of this same worker container (e.g. after SIGKILL + restart).
+        // Leftovers from a previous run of this same worker container (e.g. after
+        // SIGKILL + restart).
         removeOwnContainers();
 
         for (int i = 0; i < slotCount; i++) {
@@ -73,10 +76,14 @@ public class WarmPool {
         }
     }
 
-    /** Replace a slot's container with a fresh one (after timeout, cancel or failure). */
+    /**
+     * Replace a slot's container with a fresh one (after timeout, cancel or
+     * failure).
+     */
     public void recycle(int slot) {
         run(List.of("docker", "rm", "-f", containerName(slot)), 15);
-        // The watchdog's own rm -f may still be removing this container, so the name can be
+        // The watchdog's own rm -f may still be removing this container, so the name
+        // can be
         // briefly in use. Retry creation a few times before giving up.
         for (int attempt = 1; attempt <= 5; attempt++) {
             try {
@@ -112,8 +119,10 @@ public class WarmPool {
     }
 
     private void createSlot(int slot) {
+        System.out.println("createSlot: " + slot);
         try {
-            Files.createDirectories(workerDir(slot));
+            Path check = Files.createDirectories(workerDir(slot));
+            System.out.println("workerDir path check: " + check);
         } catch (IOException e) {
             throw new IllegalStateException("Cannot create slot dir " + workerDir(slot), e);
         }
@@ -126,14 +135,21 @@ public class WarmPool {
                 "--label", "rce.slot=" + slot));
         cmd.addAll(SANDBOX);
         cmd.add("--cpus=" + POOL_CPUS);
+
+        System.out.println("hostDir path check: " + hostDir(slot).toString());
+
         cmd.addAll(List.of("-v", hostDir(slot).toString().replace("\\", "/") + ":/code:ro"));
         cmd.addAll(List.of(IMAGE, "sleep", "infinity"));
 
         Result r = run(cmd, 30);
+
+        System.out.println("containerName: " + containerName(slot));
+
         if (r.exit != 0) {
             throw new IllegalStateException(
                     "Failed to create warm container " + containerName(slot) + ": " + r.output);
         }
+        count++;
     }
 
     private void removeOwnContainers() {
@@ -151,10 +167,25 @@ public class WarmPool {
     private record Result(int exit, String output) {
     }
 
+    public boolean isRunning(int slot) {
+        Result r = run(List.of("docker", "inspect", "-f", "{{.State.Running}}",
+                containerName(slot)), 5);
+        return r.exit == 0 && r.output.trim().equals("true");
+    }
+
+    public boolean isDirty(int slot) {
+        Result r = run(List.of("docker", "top", containerName(slot), "-eo", "pid"), 5);
+        if (r.exit != 0)
+            return true; // can't tell, so throw it away
+        long procs = r.output.lines().filter(l -> !l.isBlank()).count() - 1; // minus header
+        return procs > IDLE_PROCS;
+    }
+
     private Result run(List<String> cmd, int timeoutSec) {
         try {
             Process p = new ProcessBuilder(cmd).redirectErrorStream(true).start();
-            // Output here is tiny (ids or one error line), so reading after the process is safe.
+            // Output here is tiny (ids or one error line), so reading after the process is
+            // safe.
             if (!p.waitFor(timeoutSec, TimeUnit.SECONDS)) {
                 p.destroyForcibly();
                 return new Result(-1, "timed out: " + String.join(" ", cmd));

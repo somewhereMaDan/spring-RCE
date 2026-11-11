@@ -35,7 +35,7 @@ public class WorkerService implements SmartLifecycle {
 
   private static final String STREAM = "rce:stream";
   private static final String GROUP = "workers";
-  private static final int WORKER_COUNT = 6;
+  private static final int WORKER_COUNT = 1;
 
   private static final int MAX_DELIVERIES = 3;
   private static final String DEAD_STREAM = "rce:dead";
@@ -90,7 +90,6 @@ public class WorkerService implements SmartLifecycle {
     String consumer = consumerPrefix + "-" + workerId;
     while (running && !shuttingDown) {
       try {
-        System.out.println("consumer: " + consumer);
         List<MapRecord<String, Object, Object>> records = claimStale(consumer);
 
         if (records.isEmpty()) {

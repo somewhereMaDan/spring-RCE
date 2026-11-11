@@ -83,6 +83,7 @@ public class DockerExecutorService {
 
     private void executeCppWarm(String code, String inputString, String jobId, int slot) {
         Path src = warmPool.workerDir(slot).resolve("main.cpp");
+        System.out.println("executeCppWarm src: " + src);
         try {
             Files.writeString(src, code);
         } catch (IOException e) {
@@ -246,7 +247,6 @@ public class DockerExecutorService {
                         System.out.println("[WD] job=" + jobId + " limit hit at " + (System.currentTimeMillis() - start)
                                 + "ms, killing " + killTarget);
                         timedOut.set(true);
-                        timedOut.set(true);
                         killedAt.set(System.currentTimeMillis());
                         killContainer(killTarget);
                     } else if (redis.opsForHash().hasKey(key, "cancelRequested")) {
@@ -273,6 +273,12 @@ public class DockerExecutorService {
             tOut.join();
             tErr.join(); // will wait until the thread is done executing
 
+            if (slot >= 0 && warmPool != null && !timedOut.get() && !cancelled.get()
+                    && exitCode != 0 && !warmPool.isRunning(slot)) {
+                finish(jobId, "ERROR", "INTERNAL", "Execution slot was unavailable, please retry");
+                return; // clean stays false, so finally recycles the slot
+            }
+
             Map<String, String> res = new HashMap<>();
             res.put("stdout", out.text());
             res.put("stderr", err.text());
@@ -291,7 +297,7 @@ public class DockerExecutorService {
             }
             redis.opsForHash().putAll(key, res);
             redis.expire(key, Duration.ofHours(1));
-            clean = true;
+            clean = !(slot >= 0 && warmPool != null && warmPool.isDirty(slot));
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             finish(jobId, "ERROR", "INTERNAL", "Interrupted");
