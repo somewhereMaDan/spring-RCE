@@ -167,12 +167,6 @@ public class WarmPool {
     private record Result(int exit, String output) {
     }
 
-    public boolean isRunning(int slot) {
-        Result r = run(List.of("docker", "inspect", "-f", "{{.State.Running}}",
-                containerName(slot)), 5);
-        return r.exit == 0 && r.output.trim().equals("true");
-    }
-
     public boolean isDirty(int slot) {
         Result r = run(List.of("docker", "top", containerName(slot), "-eo", "pid"), 5);
         if (r.exit != 0)

@@ -273,12 +273,6 @@ public class DockerExecutorService {
             tOut.join();
             tErr.join(); // will wait until the thread is done executing
 
-            if (slot >= 0 && warmPool != null && !timedOut.get() && !cancelled.get()
-                    && exitCode != 0 && !warmPool.isRunning(slot)) {
-                finish(jobId, "ERROR", "INTERNAL", "Execution slot was unavailable, please retry");
-                return; // clean stays false, so finally recycles the slot
-            }
-
             Map<String, String> res = new HashMap<>();
             res.put("stdout", out.text());
             res.put("stderr", err.text());

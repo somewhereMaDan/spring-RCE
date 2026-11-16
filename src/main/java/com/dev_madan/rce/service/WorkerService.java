@@ -35,7 +35,7 @@ public class WorkerService implements SmartLifecycle {
 
   private static final String STREAM = "rce:stream";
   private static final String GROUP = "workers";
-  private static final int WORKER_COUNT = 1;
+  private static final int WORKER_COUNT = 3;
 
   private static final int MAX_DELIVERIES = 3;
   private static final String DEAD_STREAM = "rce:dead";
