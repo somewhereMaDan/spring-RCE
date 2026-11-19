@@ -1,11 +1,15 @@
 package com.dev_madan.rce.controller;
 
+import org.springframework.http.HttpHeaders;
 import java.time.Duration;
 import java.util.Map;
 import java.util.UUID;
 
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Profile;
 import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.HttpStatusCode;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -27,9 +31,20 @@ public class ExecutionController {
     private final StringRedisTemplate redis;
     private final ObjectMapper om;
 
+    @Value("${rce.queue.max-depth:50}")
+    private long maxDepth;
+
     @PostMapping
     public ResponseEntity<Map<String, String>> submit(
             @RequestBody RunRequest req) throws Exception {
+
+        Long depth = redis.opsForStream().size("rce:stream");
+
+        if(depth != null && depth >= maxDepth){
+            return ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS)
+            .header(HttpHeaders.RETRY_AFTER, "5")
+            .body(Map.of("error", "queue full, retry later"));
+        }
 
         String jobId = UUID.randomUUID().toString();
         System.out.println(

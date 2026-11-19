@@ -90,6 +90,7 @@ public class WorkerService implements SmartLifecycle {
     String consumer = consumerPrefix + "-" + workerId;
     while (running && !shuttingDown) {
       try {
+        System.out.println("consumer from workerLoop: " + consumer);
         List<MapRecord<String, Object, Object>> records = claimStale(consumer);
 
         if (records.isEmpty()) {

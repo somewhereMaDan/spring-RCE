@@ -26,6 +26,7 @@ services:
       SPRING_PROFILES_ACTIVE: gateway
       SERVER_PORT: 8081
       SPRING_DATA_REDIS_HOST: redis
+      RCE_QUEUE_MAX_DEPTH: 50
     networks:
       - internal
     depends_on:
