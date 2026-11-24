@@ -90,7 +90,6 @@ public class WorkerService implements SmartLifecycle {
     String consumer = consumerPrefix + "-" + workerId;
     while (running && !shuttingDown) {
       try {
-        System.out.println("consumer from workerLoop: " + consumer);
         List<MapRecord<String, Object, Object>> records = claimStale(consumer);
 
         if (records.isEmpty()) {
@@ -157,7 +156,8 @@ public class WorkerService implements SmartLifecycle {
                 jobData.getCode(),
                 jobData.getInputString(),
                 jobData.getJobId(),
-                workerId);
+                workerId,
+                this::checkIfShuttingDown);
           } catch (Exception e) {
             redis.opsForHash().putAll(key, Map.of(
                 "status", "ERROR", "verdict", "INTERNAL",
@@ -319,5 +319,9 @@ public class WorkerService implements SmartLifecycle {
   public int getPhase() {
     // Stops before the Lettuce connection factory (phase 0).
     return Integer.MAX_VALUE;
+  }
+
+  public boolean checkIfShuttingDown() {
+    return shuttingDown;
   }
 }

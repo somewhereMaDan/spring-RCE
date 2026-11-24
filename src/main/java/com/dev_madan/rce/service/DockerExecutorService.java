@@ -18,14 +18,17 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.BooleanSupplier;
 
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.context.annotation.Profile;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 
 import com.dev_madan.rce.pool.WarmPool;
 
+@Profile("worker")
 @Service
 public class DockerExecutorService {
     @Value("${app.host-temp-path:}")
@@ -46,17 +49,18 @@ public class DockerExecutorService {
         this.warmPool = pool.getIfAvailable();
     }
 
-    public void execute(String lang, String code, String inputString, String jobId, int slot) {
+    public void execute(String lang, String code, String inputString, String jobId, int slot,
+            BooleanSupplier checkIfShuttingDown) {
         switch (lang) {
-            case "python" -> executePython(code, inputString, jobId);
-            case "java" -> executeJava(code, inputString, jobId);
+            case "python" -> executePython(code, inputString, jobId, checkIfShuttingDown);
+            case "java" -> executeJava(code, inputString, jobId, checkIfShuttingDown);
             case "cpp" -> {
                 if (warmPool != null && poolEnabled) {
                     System.out.println("new warm containerssss");
-                    executeCppWarm(code, inputString, jobId, slot);
+                    executeCppWarm(code, inputString, jobId, slot, checkIfShuttingDown);
                 } else {
                     System.out.println("olderrr");
-                    executeCpp(code, inputString, jobId);
+                    executeCpp(code, inputString, jobId, checkIfShuttingDown);
                 }
             }
 
@@ -81,7 +85,8 @@ public class DockerExecutorService {
         return cmd;
     }
 
-    private void executeCppWarm(String code, String inputString, String jobId, int slot) {
+    private void executeCppWarm(String code, String inputString, String jobId, int slot,
+            BooleanSupplier checkIfShuttingDown) {
         Path src = warmPool.workerDir(slot).resolve("main.cpp");
         System.out.println("executeCppWarm src: " + src);
         try {
@@ -105,10 +110,10 @@ public class DockerExecutorService {
                 Files.deleteIfExists(src);
             } catch (IOException ignored) {
             }
-        });
+        }, checkIfShuttingDown);
     }
 
-    private void executePython(String code, String inputString, String jobId) {
+    private void executePython(String code, String inputString, String jobId, BooleanSupplier checkIfShuttingDown) {
 
         // Path visible to the worker container
         Path workerDir = Path.of("/app/temp", jobId);
@@ -138,10 +143,11 @@ public class DockerExecutorService {
                 "python-runner", "sh", "-c",
                 "exec timeout -s KILL 12s python -u /code/main.py"));
 
-        startProcess(cmd, inputString, jobId, "rce-" + jobId, -1, () -> deleteDir(workerDir.toString()));
+        startProcess(cmd, inputString, jobId, "rce-" + jobId, -1, () -> deleteDir(workerDir.toString()),
+                checkIfShuttingDown);
     }
 
-    private void executeCpp(String code, String inputString, String jobId) {
+    private void executeCpp(String code, String inputString, String jobId, BooleanSupplier checkIfShuttingDown) {
         // Path visible to the worker container
         Path workerDir = Path.of("/app/temp", jobId);
 
@@ -160,7 +166,8 @@ public class DockerExecutorService {
         List<String> cmd = dockerCmd(jobId, hostDir, List.of("cpp-runner", "sh", "-c",
                 "g++ -std=c++17 -O2 -pipe /code/main.cpp -o /run-code/main && exec timeout -s KILL 12s /run-code/main"));
 
-        startProcess(cmd, inputString, jobId, "rce-" + jobId, -1, () -> deleteDir(workerDir.toString()));
+        startProcess(cmd, inputString, jobId, "rce-" + jobId, -1, () -> deleteDir(workerDir.toString()),
+                checkIfShuttingDown);
     }
 
     // Suppose the job ID is 123.
@@ -174,7 +181,7 @@ public class DockerExecutorService {
     // 6. The worker collects stdout, stderr and exit code.
     // 7. The worker deletes /app/temp/123, which also removes the host-side files.
 
-    private void executeJava(String code, String inputString, String jobId) {
+    private void executeJava(String code, String inputString, String jobId, BooleanSupplier checkIfShuttingDown) {
 
         // Path visible to the worker container
         Path workerDir = Path.of("/app/temp", jobId);
@@ -201,11 +208,11 @@ public class DockerExecutorService {
 
         startProcess(cmd, inputString, jobId, "rce-" + jobId, -1, () -> {
             deleteDir(workerDir.toString());
-        });
+        }, checkIfShuttingDown);
     }
 
     private void startProcess(List<String> cmd, String inputString, String jobId,
-            String killTarget, int slot, Runnable cleanup) {
+            String killTarget, int slot, Runnable cleanup, BooleanSupplier checkIfShuttingDown) {
         String key = "run:" + jobId;
         long start = System.currentTimeMillis();
 
@@ -302,7 +309,8 @@ public class DockerExecutorService {
             if (child != null && child.isAlive())
                 killContainer(killTarget);
             cleanup.run();
-            if (slot >= 0 && warmPool != null && (!clean || timedOut.get() || cancelled.get())) {
+            if (!checkIfShuttingDown.getAsBoolean() && slot >= 0 && warmPool != null
+                    && (!clean || timedOut.get() || cancelled.get())) {
                 warmPool.recycle(slot);
             }
         }

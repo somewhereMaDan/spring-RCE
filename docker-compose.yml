@@ -39,7 +39,7 @@ services:
       context: .
       dockerfile: dockerfile
     environment:
-      POOL_CPUS: ${POOL_CPUS:-0.25}
+      POOL_CPUS: ${POOL_CPUS:-0.5}
       APP_WARM_POOL: ${APP_WARM_POOL:-true}
       SPRING_PROFILES_ACTIVE: worker
       SPRING_DATA_REDIS_HOST: redis

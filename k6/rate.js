@@ -11,6 +11,8 @@ const RATE = Number(__ENV.RATE || 3);
 const DURATION = __ENV.DURATION || '60s';
 const MAX_WAIT_S = Number(__ENV.MAX_WAIT_S || 120);
 
+http.setResponseCallback(http.expectedStatuses(200, 201, 202, 429));
+
 const PROGRAMS = {
   heavy: '#include <bits/stdc++.h>\nint main(){ long long s=0; for(int i=0;i<1000000;i++) s+=i; std::cout << s << "\\n"; }',
   light: '#include <iostream>\nint main(){ long long s=0; for(int i=0;i<1000000;i++) s+=i; std::cout << s << "\\n"; }',
@@ -23,6 +25,8 @@ const exec = new Trend('job_exec_ms', true);     // wallMs stored on the result 
 const submitted = new Counter('jobs_submitted');
 const done = new Counter('jobs_done');           // reached DONE with verdict OK and correct output
 const failed = new Counter('jobs_failed');       // anything else, including poll timeout
+const rejected = new Counter('jobs_rejected');        // 429 on submit
+const pollThrottled = new Counter('polls_throttled'); // 429 on poll
 
 export const options = {
   scenarios: {
@@ -47,10 +51,15 @@ export default function () {
     JSON.stringify({ lang: 'cpp', code: CODE, inputString: '' }),
     Object.assign({ tags: { name: 'submit' } }, JSON_HEADERS),
   );
+  if (res.status === 429) {
+    rejected.add(1);
+    return;
+  }
   if (res.status !== 200 && res.status !== 201 && res.status !== 202) {
     failed.add(1);
     return;
   }
+
   const id = res.json('jobId');
   submitted.add(1);
 
@@ -62,6 +71,7 @@ export default function () {
     sleep(pause);
     waited += pause;
     const r = http.get(`${BASE}/runs/${id}`, { tags: { name: 'poll' } });
+    if (r.status === 429) { pollThrottled.add(1); continue; }
     if (r.status !== 200) continue;
     const body = r.json();
     if (body.status === 'DONE' || body.status === 'ERROR' || body.status === 'CANCELLED') {
